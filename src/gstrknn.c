@@ -3,7 +3,7 @@
  * Copyright (C) 2005 Thomas Vander Stichele <thomas@apestaart.org>
  * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
  * Copyright (C) YEAR AUTHOR_NAME AUTHOR_EMAIL
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
@@ -56,56 +56,58 @@
  * </refsect2>
  */
 
+#include "gst/gstinfo.h"
+#include "gst/gstmemory.h"
+#include "gst/gstpad.h"
+#include <unistd.h>
 #ifdef HAVE_CONFIG_H
-#  include <config.h>
+#include <config.h>
 #endif
 
 #include <gst/gst.h>
 
 #include "gstrknn.h"
 
-GST_DEBUG_CATEGORY_STATIC (gst_plugin_rknn_debug);
+GST_DEBUG_CATEGORY_STATIC(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
 /* Filter signals and args */
-enum
-{
-  /* FILL ME */
-  LAST_SIGNAL
+enum {
+    /* FILL ME */
+    LAST_SIGNAL
 };
 
-enum
-{
-  PROP_0,
-  PROP_SILENT,
-  PROP_BYPASS
+enum {
+    PROP_0,
+    PROP_SILENT = 1,
+    PROP_BYPASS = 2,
 } PROP_ID;
 
 /* the capabilities of the inputs and outputs.
  *
  * describe the real formats here.
  */
-static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE ("sink",
+static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE("sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
-    );
+    GST_STATIC_CAPS("video/x-raw,"
+                    "format = (string) { " PLUGIN_RKNN_SUPPORT_FORMATS " } "));
 
-static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
+static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("ANY")
-    );
+    GST_STATIC_CAPS("video/x-raw,"
+                    "format = (string) { " PLUGIN_RKNN_SUPPORT_FORMATS " } "));
 
 #define gst_plugin_rknn_parent_class parent_class
 /**
  * G_DEFINE_TYPE:
  * @TN: The name of the new type, in Camel case.
- * @t_n: The name of the new type, in lowercase, with words 
+ * @t_n: The name of the new type, in lowercase, with words
  *  separated by `_`.
  * @T_P: The #GType of the parent type.
  */
-G_DEFINE_TYPE (GstPluginRknn, gst_plugin_rknn, GST_TYPE_ELEMENT);
+G_DEFINE_TYPE(GstPluginRknn, gst_plugin_rknn, GST_TYPE_ELEMENT);
 
 /**
  * GST_ELEMENT_REGISTER_DEFINE:
@@ -115,52 +117,76 @@ G_DEFINE_TYPE (GstPluginRknn, gst_plugin_rknn, GST_TYPE_ELEMENT);
  * @r: The #GstRank of the element (higher rank means more importance when autoplugging, see #GstRank)
  * @t: The #GType of the element.
  */
-GST_ELEMENT_REGISTER_DEFINE (plugin_rknn, "rknn", GST_RANK_NONE,
+GST_ELEMENT_REGISTER_DEFINE(plugin_rknn, "rknn", GST_RANK_NONE,
     GST_TYPE_PLUGIN_RKNN);
 
-static void gst_plugin_rknn_set_property (GObject * object,
-    guint prop_id, const GValue * value, GParamSpec * pspec);
-static void gst_plugin_rknn_get_property (GObject * object,
-    guint prop_id, GValue * value, GParamSpec * pspec);
+static void gst_plugin_rknn_set_property(GObject* object,
+    guint prop_id, const GValue* value, GParamSpec* pspec);
+static void gst_plugin_rknn_get_property(GObject* object,
+    guint prop_id, GValue* value, GParamSpec* pspec);
 
-static gboolean gst_plugin_rknn_sink_event (GstPad * pad,
-    GstObject * parent, GstEvent * event);
-static GstFlowReturn gst_plugin_rknn_chain (GstPad * pad,
-    GstObject * parent, GstBuffer * buf);
+static gboolean gst_plugin_rknn_sink_event(GstPad* pad,
+    GstObject* parent, GstEvent* event);
+static gboolean gst_plugin_rknn_src_event(GstPad* pad,
+    GstObject* parent, GstEvent* event);
+static GstFlowReturn gst_plugin_rknn_chain(GstPad* pad,
+    GstObject* parent, GstBuffer* buf);
 
 /* GObject vmethod implementations */
 
 /* initialize the plugin's class */
 static void
-gst_plugin_rknn_class_init (GstPluginRknnClass * klass)
+gst_plugin_rknn_finalize(GObject* object)
 {
-  GObjectClass *gobject_class;
-  GstElementClass *gstelement_class;
+    GstPluginRknn* filter = GST_PLUGIN_RKNN(object);
+    if (filter->task_data) {
+        filter->task_data->stop = TRUE;
+        // Use an empty buffer as sentinel instead of NULL
+        g_async_queue_push(filter->queue, gst_buffer_new());
+        g_thread_join(filter->task_thread);
+        g_free(filter->task_data);
+    }
 
-  gobject_class = (GObjectClass *) klass;
-  gstelement_class = (GstElementClass *) klass;
-
-  gobject_class->set_property = gst_plugin_rknn_set_property;
-  gobject_class->get_property = gst_plugin_rknn_get_property;
-
-  g_object_class_install_property (gobject_class, PROP_SILENT,
-      g_param_spec_boolean ("silent", "Silent", "Produce verbose output ?",
-          FALSE, G_PARAM_READWRITE));
-  g_object_class_install_property (gobject_class, PROP_BYPASS,
-      g_param_spec_boolean ("bypass", "Bypass",
-          "Bypass the filter and just pass through the data",
-          FALSE, G_PARAM_READWRITE));
-
-  gst_element_class_set_details_simple (gstelement_class,
-      "Rknn Plugin",
-      "FIXME: Rknn Plugin classification",
-      "FIXME: Rknn Plugin description", "haydenee <lth0320@163.com>");
-
-  gst_element_class_add_pad_template (gstelement_class,
-      gst_static_pad_template_get (&src_factory));
-  gst_element_class_add_pad_template (gstelement_class,
-      gst_static_pad_template_get (&sink_factory));
+    if (filter->sink_caps)
+        gst_caps_unref(filter->sink_caps);
+    if (filter->src_caps)
+        gst_caps_unref(filter->src_caps);
+    G_OBJECT_CLASS(gst_plugin_rknn_parent_class)->finalize(object);
 }
+
+static void
+gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
+{
+    GObjectClass* gobject_class;
+    GstElementClass* gstelement_class;
+
+    gobject_class = (GObjectClass*)klass;
+    gstelement_class = (GstElementClass*)klass;
+
+    gobject_class->set_property = gst_plugin_rknn_set_property;
+    gobject_class->get_property = gst_plugin_rknn_get_property;
+    gobject_class->finalize = (GObjectFinalizeFunc)gst_plugin_rknn_finalize;
+
+    g_object_class_install_property(gobject_class, PROP_SILENT,
+        g_param_spec_boolean("silent", "Silent", "Produce verbose output ?",
+            FALSE, G_PARAM_READWRITE));
+    g_object_class_install_property(gobject_class, PROP_BYPASS,
+        g_param_spec_boolean("bypass", "Bypass",
+            "Bypass the filter and just pass through the data",
+            FALSE, G_PARAM_READWRITE));
+
+    gst_element_class_set_details_simple(gstelement_class,
+        "Rknn Plugin",
+        "FIXME: Rknn Plugin classification",
+        "FIXME: Rknn Plugin description", "haydenee <lth0320@163.com>");
+
+    gst_element_class_add_pad_template(gstelement_class,
+        gst_static_pad_template_get(&src_factory));
+    gst_element_class_add_pad_template(gstelement_class,
+        gst_static_pad_template_get(&sink_factory));
+}
+
+static gpointer rknn_task_func(gpointer data);
 
 /* initialize the new element
  * instantiate pads and add them to element
@@ -168,132 +194,233 @@ gst_plugin_rknn_class_init (GstPluginRknnClass * klass)
  * initialize instance structure
  */
 static void
-gst_plugin_rknn_init (GstPluginRknn * filter)
+gst_plugin_rknn_init(GstPluginRknn* filter)
 {
-  filter->sinkpad = gst_pad_new_from_static_template (&sink_factory, "sink");
-  gst_pad_set_event_function (filter->sinkpad,
-      GST_DEBUG_FUNCPTR (gst_plugin_rknn_sink_event));
-  gst_pad_set_chain_function (filter->sinkpad,
-      GST_DEBUG_FUNCPTR (gst_plugin_rknn_chain));
-  GST_PAD_SET_PROXY_CAPS (filter->sinkpad);
-  gst_element_add_pad (GST_ELEMENT (filter), filter->sinkpad);
+    filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
+    gst_pad_set_event_function(filter->sinkpad,
+        GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_event));
+    gst_pad_set_chain_function(filter->sinkpad,
+        GST_DEBUG_FUNCPTR(gst_plugin_rknn_chain));
+    GST_PAD_SET_PROXY_CAPS(filter->sinkpad);
+    gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad);
 
-  filter->srcpad = gst_pad_new_from_static_template (&src_factory, "src");
-  GST_PAD_SET_PROXY_CAPS (filter->srcpad);
-  gst_element_add_pad (GST_ELEMENT (filter), filter->srcpad);
+    filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
+    GST_PAD_SET_PROXY_CAPS(filter->srcpad);
+    gst_pad_set_event_function(filter->srcpad,
+        GST_DEBUG_FUNCPTR(gst_plugin_rknn_src_event));
+    gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
 
-  filter->silent = FALSE;
+    filter->silent = FALSE;
+    filter->bypass = FALSE;
+    filter->sink_caps = NULL;
+    filter->src_caps = NULL;
+
+    filter->queue = g_async_queue_new();
+    GST_LOG_OBJECT(filter, "gst_plugin_rknn_init");
+    filter->task_data = g_new0(RknnTaskData, 1);
+    filter->task_data->filter = filter;
+    filter->task_data->stop = FALSE;
+    filter->task_thread = g_thread_new(
+        "rknn_task_thread", rknn_task_func, filter->task_data);
 }
 
 static void
-gst_plugin_rknn_set_property (GObject * object, guint prop_id,
-    const GValue * value, GParamSpec * pspec)
+gst_plugin_rknn_set_property(GObject* object, guint prop_id,
+    const GValue* value, GParamSpec* pspec)
 {
-  GstPluginRknn *filter = GST_PLUGIN_RKNN (object);
+    GstPluginRknn* filter = GST_PLUGIN_RKNN(object);
 
-  switch (prop_id) {
+    switch (prop_id) {
     case PROP_SILENT:
-      filter->silent = g_value_get_boolean (value);
-      break;
+        filter->silent = g_value_get_boolean(value);
+        break;
     case PROP_BYPASS:
-      filter->bypass = g_value_get_boolean (value);
+        filter->bypass = g_value_get_boolean(value);
+        break;
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      break;
-  }
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+        break;
+    }
 }
 
 static void
-gst_plugin_rknn_get_property (GObject * object, guint prop_id,
-    GValue * value, GParamSpec * pspec)
+gst_plugin_rknn_get_property(GObject* object, guint prop_id,
+    GValue* value, GParamSpec* pspec)
 {
-  GstPluginRknn *filter = GST_PLUGIN_RKNN (object);
+    GstPluginRknn* filter = GST_PLUGIN_RKNN(object);
 
-  switch (prop_id) {
+    switch (prop_id) {
     case PROP_SILENT:
-      g_value_set_boolean (value, filter->silent);
-      break;
+        g_value_set_boolean(value, filter->silent);
+        break;
     case PROP_BYPASS:
-      g_value_set_boolean (value, filter->bypass);
-      break;
+        g_value_set_boolean(value, filter->bypass);
+        break;
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      break;
-  }
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+        break;
+    }
 }
 
 /* GstElement vmethod implementations */
 
 /* this function handles sink events */
 static gboolean
-gst_plugin_rknn_sink_event (GstPad * pad, GstObject * parent,
-    GstEvent * event)
+gst_plugin_rknn_sink_event(GstPad* pad, GstObject* parent,
+    GstEvent* event)
 {
-  GstPluginRknn *filter;
-  gboolean ret;
+    GstPluginRknn* filter;
+    gboolean ret;
 
-  filter = GST_PLUGIN_RKNN (parent);
+    filter = GST_PLUGIN_RKNN(parent);
 
-  GST_LOG_OBJECT (filter, "Received %s event: %" GST_PTR_FORMAT,
-      GST_EVENT_TYPE_NAME (event), event);
+    GST_LOG_OBJECT(filter, "Received %s event: %" GST_PTR_FORMAT,
+        GST_EVENT_TYPE_NAME(event), event);
 
-  switch (GST_EVENT_TYPE (event)) {
-    case GST_EVENT_CAPS:
-    {
-      GstCaps *caps;
+    switch (GST_EVENT_TYPE(event)) {
+    case GST_EVENT_CAPS: {
+        GstCaps* caps;
 
-      gst_event_parse_caps (event, &caps);
-      /* do something with the caps */
+        gst_event_parse_caps(event, &caps);
+        /* do something with the caps */
 
-      /* and forward */
-      ret = gst_pad_event_default (pad, parent, event);
-      break;
+        if (filter->sink_caps)
+            gst_caps_unref(filter->sink_caps);
+        filter->sink_caps = gst_caps_copy(caps);
+
+        GST_INFO_OBJECT(filter, "Negotiated sink caps: %" GST_PTR_FORMAT, filter->sink_caps);
+
+        /* and forward */
+        ret = gst_pad_event_default(pad, parent, event);
+        break;
     }
     default:
-      ret = gst_pad_event_default (pad, parent, event);
-      break;
-  }
-  return ret;
+        ret = gst_pad_event_default(pad, parent, event);
+        break;
+    }
+    return ret;
 }
 
+static gboolean
+gst_plugin_rknn_src_event(GstPad* pad, GstObject* parent, GstEvent* event)
+{
+    GstPluginRknn* filter = GST_PLUGIN_RKNN(parent);
+    gboolean ret;
+
+    switch (GST_EVENT_TYPE(event)) {
+    case GST_EVENT_CAPS: {
+        GstCaps* caps;
+        gst_event_parse_caps(event, &caps);
+
+        if (filter->src_caps)
+            gst_caps_unref(filter->src_caps);
+        filter->src_caps = gst_caps_copy(caps);
+
+        GST_INFO_OBJECT(filter, "Src pad negotiated caps: %" GST_PTR_FORMAT, filter->src_caps);
+
+        ret = gst_pad_event_default(pad, parent, event);
+        break;
+    }
+    default:
+        ret = gst_pad_event_default(pad, parent, event);
+        break;
+    }
+    return ret;
+}
 /* chain function
  * this function does the actual processing
  */
 static GstFlowReturn
-gst_plugin_rknn_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
+gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
 {
-  GstPluginRknn *filter;
+    // passed in buf already has a ref count of 1. If we pass out a buffer, it also needs a ref count of 1.
+    GstPluginRknn* filter;
 
-  filter = GST_PLUGIN_RKNN (parent);
+    filter = GST_PLUGIN_RKNN(parent);
 
-  if (filter->silent == FALSE)
-    g_print ("I'm plugged, therefore I'm in.\n");
+    g_async_queue_push(filter->queue, gst_buffer_ref(buf));
 
-  if (filter->bypass) {
-    /* if we are in bypass mode, just push the buffer out */
-    GST_LOG_OBJECT (filter, "Bypassing the filter, pushing buffer out");
-    return gst_pad_push (filter->srcpad, buf);
-  }
-  /* just push out the incoming buffer without touching it */
-  return gst_pad_push (filter->srcpad, buf);
+    // Drop the oldest buffer if the queue is too long
+    if (g_async_queue_length(filter->queue) > MAX_QUEUE_LENGTH) {
+        GstBuffer* old_buf = g_async_queue_try_pop(filter->queue);
+        if (old_buf) {
+            // This buffer is not going to be passed, so need to unref twice
+            gst_buffer_unref(old_buf);
+            gst_buffer_unref(old_buf);
+        }
+
+        if (g_get_monotonic_time() - filter->last_buffer_full_log_time > 1000000) {
+            GST_LOG_OBJECT(filter, "Queue full, dropping oldest buffer. Queue length: %d",
+                g_async_queue_length(filter->queue));
+            filter->last_buffer_full_log_time = g_get_monotonic_time();
+        }
+    }
+
+    /* just push out the incoming buffer without touching it */
+    return GST_FLOW_OK;
 }
 
+static gpointer rknn_task_func(gpointer data)
+{
+    int ret = GST_FLOW_OK;
+    RknnTaskData* task_data = (RknnTaskData*)data;
+    GstPluginRknn* filter = task_data->filter;
+    GST_INFO_OBJECT(filter, "Starting rknn task thread");
+    while (!task_data->stop) {
+        GstBuffer* buf = g_async_queue_pop(filter->queue);
+
+        if (task_data->stop) {
+            GST_INFO_OBJECT(filter, "Stopping rknn task thread");
+            gst_buffer_unref(buf);
+            break;
+        }
+
+        if (!buf) {
+            GST_WARNING_OBJECT(filter, "Received NULL buffer");
+            continue;
+        }
+
+        if (filter->silent == FALSE)
+            g_print("I'm plugged, therefore I'm in.\n");
+
+        if (filter->bypass) {
+            /* if we are in bypass mode, just push the buffer out */
+            GST_LOG_OBJECT(filter, "Bypassing the filter, pushing buffer out");
+            gst_pad_push(filter->srcpad, buf);
+            if (ret != GST_FLOW_OK) {
+                GST_WARNING_OBJECT(filter, "Failed to push buffer, ret = %d", ret);
+            }
+            gst_buffer_unref(buf);
+            continue;
+        }
+        // 这里做耗时的推理或处理
+
+        usleep(100000); // 模拟处理延时
+
+        gst_pad_push(filter->srcpad, buf);
+        if (ret != GST_FLOW_OK) {
+            GST_WARNING_OBJECT(filter, "Failed to push buffer, ret = %d", ret);
+        }
+        gst_buffer_unref(buf);
+    }
+    return NULL;
+}
 
 /* entry point to initialize the plug-in
  * initialize the plug-in itself
  * register the element factories and other features
  */
 static gboolean
-plugin_init (GstPlugin * plugin)
+plugin_init(GstPlugin* plugin)
 {
-  /* debug category for filtering log messages
-   *
-   * exchange the string 'Template plugin' with your description
-   */
-  GST_DEBUG_CATEGORY_INIT (gst_plugin_rknn_debug, "rknn",
-      0, "RKNN plugin");
+    /* debug category for filtering log messages
+     *
+     * exchange the string 'Template plugin' with your description
+     */
+    GST_DEBUG_CATEGORY_INIT(gst_plugin_rknn_debug, "rknn",
+        0, "RKNN plugin");
 
-  return GST_ELEMENT_REGISTER (plugin_rknn, plugin);
+    return GST_ELEMENT_REGISTER(plugin_rknn, plugin);
 }
 
 /* PACKAGE: this is usually set by meson depending on some _INIT macro
@@ -304,7 +431,6 @@ plugin_init (GstPlugin * plugin)
 #ifndef PACKAGE
 #define PACKAGE "gst-plugin-rknn"
 #endif
-
 
 /*
  * GST_PLUGIN_DEFINE:
@@ -318,7 +444,7 @@ plugin_init (GstPlugin * plugin)
  * @package: the package-name (e.g. PACKAGE_NAME from config.h)
  * @origin: a description from where the package comes from (e.g. the homepage URL)
  */
-GST_PLUGIN_DEFINE (GST_VERSION_MAJOR,
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
     rknn,
     "rknn",

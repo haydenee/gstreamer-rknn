@@ -4,7 +4,7 @@
  * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
  * Copyright (C) 2020 Niels De Graef <niels.degraef@gmail.com>
  * Copyright (C) YEAR AUTHOR_NAME AUTHOR_EMAIL
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
@@ -47,8 +47,20 @@
 #ifndef __GST_PLUGIN_RKNN_H__
 #define __GST_PLUGIN_RKNN_H__
 
+#include "glibconfig.h"
+#include "gst/gsttask.h"
 #include <gst/gst.h>
 
+#define MAX_QUEUE_LENGTH 3
+
+#define PLUGIN_RKNN_SUPPORT_FORMATS MPP_SUPPORT_FORMATS "," RGA_SUPPORT_FORMATS
+#define MPP_SUPPORT_FORMATS    \
+    "NV12, I420, YUY2, UYVY, " \
+    "BGR16, RGB16, BGR, RGB, " \
+    "ABGR, ARGB, BGRA, RGBA, xBGR, xRGB, BGRx, RGBx"
+#define RGA_SUPPORT_FORMATS                \
+    "NV12, NV21, I420, YV12, NV16, NV61, " \
+    "BGR16, RGB, BGR, RGBA, BGRA, RGBx, BGRx"
 G_BEGIN_DECLS
 
 #define GST_TYPE_PLUGIN_RKNN (gst_plugin_rknn_get_type())
@@ -62,18 +74,29 @@ G_BEGIN_DECLS
  * @ParentName: the name of the parent type, in camel case (like `GtkWidget`)
  *
  */
-G_DECLARE_FINAL_TYPE (GstPluginRknn, gst_plugin_rknn,
+G_DECLARE_FINAL_TYPE(GstPluginRknn, gst_plugin_rknn,
     GST, PLUGIN_RKNN, GstElement)
+    
+typedef struct {
+    GstPluginRknn *filter;
+    gboolean stop;
+} RknnTaskData;
 
-struct _GstPluginRknn
-{
-  GstElement element;
+struct _GstPluginRknn {
+    GstElement element;
 
-  GstPad *sinkpad, *srcpad;
+    GstPad *sinkpad, *srcpad;
 
-  gboolean silent;
+    gboolean silent;
+    gboolean bypass;
 
-  gboolean bypass;
+    GAsyncQueue* queue;
+    GThread* task_thread;
+    RknnTaskData* task_data;
+    GstCaps* sink_caps;
+    GstCaps* src_caps;
+
+    gint64 last_buffer_full_log_time;
 };
 
 G_END_DECLS

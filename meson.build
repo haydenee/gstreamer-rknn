@@ -1,8 +1,9 @@
-project('gst-plugin-rknn', 'c', version : '1.19.0.1', license : 'LGPL')
+project('gst-plugin-rknn', ['c', 'cpp'], version : '1.19.0.1', license : 'LGPL')
 
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')
 
 cc = meson.get_compiler('c')
+cpp = meson.get_compiler('cpp')
 
 gst_version = meson.project_version()
 gst_version_req = '>=1.19'
@@ -19,6 +20,7 @@ gstvideo_dep = dependency('gstreamer-video-1.0', version : gst_version_req,
   fallback : ['gst-plugins-base', 'video_dep'])
 gstpbutils_dep = dependency('gstreamer-pbutils-1.0', version : gst_version_req,
   fallback : ['gst-plugins-base', 'pbutils_dep'])
+opencv_dep = dependency('opencv4', required : false)
 
 project_source_root = meson.project_source_root()
 rga_dep = dependency('librga', required : false)
@@ -62,3 +64,4 @@ endif
 
 
 subdir('src')
+subdir('test')
