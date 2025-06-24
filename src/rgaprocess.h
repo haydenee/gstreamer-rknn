@@ -5,12 +5,6 @@
 #include "im2d.h"
 #include "rga.h"
 
-typedef struct _BOX_RECT {
-    int left;
-    int right;
-    int top;
-    int bottom;
-} BOX_RECT;
 
 #ifdef __cplusplus
 extern "C" {

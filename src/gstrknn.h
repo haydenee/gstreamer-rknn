@@ -56,6 +56,7 @@
 #include "im2d.h"
 #include "rga.h"
 #include "rknn_api.h"
+#include "rknnprocess.h"
 #define MAX_QUEUE_LENGTH 3
 #define MAX_DMABUF_INSTANCES 4
 
@@ -118,15 +119,10 @@ struct _GstPluginRknn {
     GstVideoInfo sink_info;
     RgaSURF_FORMAT sink_rga_format;
 
-    rknn_context rknn_ctx;
-    rknn_input rknn_inputs[1];
-    rknn_input_output_num rknn_io_num;
+
     char *rknn_model_path;
     gboolean rknn_model_loaded;
-    guint model_width;
-    guint model_height;
-    guint model_channel;
-
+    struct _RknnProcess rknn_process;
 
 };
 

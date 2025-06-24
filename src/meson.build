@@ -15,6 +15,7 @@ plugin_sources = [
   'rgaprocess.cc',
   'dmabuffer.c',
   'rknnprocess.cc',
+  'postprocess.cc',
   ]
 
 gstpluginrknn = library('gstrknn',

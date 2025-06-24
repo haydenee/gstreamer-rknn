@@ -260,10 +260,9 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     filter->rknn_model_loaded = FALSE;
     if (filter->rknn_model_path) {
         GST_INFO_OBJECT(filter, "Using RKNN model: %s", filter->rknn_model_path);
-        rknn_prepare(filter->rknn_model_path, filter->rknn_ctx, filter->rknn_inputs, &filter->rknn_io_num,
-            (int*)&filter->model_width, (int*)&filter->model_height, (int*)&filter->model_channel);
+        rknn_prepare(filter->rknn_model_path, &filter->rknn_process);
         GST_INFO_OBJECT(filter, "RKNN model loaded: width=%d, height=%d, channel=%d",
-            filter->model_width, filter->model_height, filter->model_channel);
+            filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_channel);
         filter->rknn_model_loaded = TRUE;
     } else {
         GST_INFO_OBJECT(filter, "No RKNN model path specified");
@@ -511,10 +510,9 @@ static gpointer rknn_task_func(gpointer data)
 
         if (filter->rknn_model_path && !filter->rknn_model_loaded) {
             GST_INFO_OBJECT(filter, "Using RKNN model: %s", filter->rknn_model_path);
-            rknn_prepare(filter->rknn_model_path, filter->rknn_ctx, filter->rknn_inputs, &filter->rknn_io_num,
-                (int*)&filter->model_width, (int*)&filter->model_height, (int*)&filter->model_channel);
+            rknn_prepare(filter->rknn_model_path, &filter->rknn_process);
             GST_INFO_OBJECT(filter, "RKNN model loaded: width=%d, height=%d, channel=%d",
-                filter->model_width, filter->model_height, filter->model_channel);
+                filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_channel);
             filter->rknn_model_loaded = TRUE;
         }
 
@@ -604,7 +602,7 @@ static gpointer rknn_task_func(gpointer data)
         }
 
         GstMemory* mem_rknn_in = NULL;
-        if (!prepare_dmabuf_memory(filter, 1, filter->model_width * filter->model_height * filter->model_channel, &mem_rknn_in)) {
+        if (!prepare_dmabuf_memory(filter, 1, filter->rknn_process.model_width * filter->rknn_process.model_height * filter->rknn_process.model_channel, &mem_rknn_in)) {
             GST_ERROR_OBJECT(filter, "Failed to prepare RKNN input memory");
             gst_buffer_unref(buf);
             gst_buffer_unref(buf);
@@ -612,7 +610,7 @@ static gpointer rknn_task_func(gpointer data)
         }
 
         GstMemory* mem_in_rgb = NULL;
-        
+
         if (!prepare_dmabuf_memory(filter, 2, calc_buffer_size(filter->sink_width, filter->sink_height, GST_VIDEO_FORMAT_RGB), &mem_in_rgb)) {
             GST_ERROR_OBJECT(filter, "Failed to prepare RGB memory for RGA");
             gst_buffer_unref(buf);
@@ -623,7 +621,7 @@ static gpointer rknn_task_func(gpointer data)
         // rga improcess options
         im_opt_t opt;
         memset(&opt, 0, sizeof(opt));
-        int usage = IM_SYNC; 
+        int usage = IM_SYNC;
         int ret;
 
         // yuv rgb conversion
@@ -651,17 +649,25 @@ static gpointer rknn_task_func(gpointer data)
         }
 
         // rga letterboxing
-        rga_buffer_t rga_buf_rknn_input = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_rknn_in), filter->model_width, filter->model_height, filter->model_width, filter->model_height, RK_FORMAT_RGB_888);
+        rga_buffer_t rga_buf_rknn_input = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_rknn_in), filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_width, filter->rknn_process.model_height, RK_FORMAT_RGB_888);
         // Define letterboxing rectangles
         // Calculate scaling ratio to maintain aspect ratio
-        float scale_w = (float)filter->model_width / filter->sink_width;
-        float scale_h = (float)filter->model_height / filter->sink_height;
+        float scale_w = (float)filter->rknn_process.model_width / filter->sink_width;
+        float scale_h = (float)filter->rknn_process.model_height / filter->sink_height;
         float scale = scale_w < scale_h ? scale_w : scale_h;
         int new_w = (int)(filter->sink_width * scale + 0.5f);
         int new_h = (int)(filter->sink_height * scale + 0.5f);
-        int offset_x = (filter->model_width - new_w) / 2;
-        int offset_y = (filter->model_height - new_h) / 2;
+        int offset_x = (filter->rknn_process.model_width - new_w) / 2;
+        int offset_y = (filter->rknn_process.model_height - new_h) / 2;
         im_rect rect_rknn_input = { offset_x, offset_y, new_w, new_h };
+        filter->rknn_process.pads.left = offset_x;
+        filter->rknn_process.pads.right = offset_x + new_w;
+        filter->rknn_process.pads.top = offset_y;
+        filter->rknn_process.pads.bottom = offset_y + new_h;
+        filter->rknn_process.scale_w = scale_w;
+        filter->rknn_process.scale_h = scale_h;
+        filter->rknn_process.original_width = filter->sink_width;
+        filter->rknn_process.original_height = filter->sink_height;
         GST_LOG_OBJECT(filter, "RGA letterboxing: src_rect=(%d,%d,%d,%d), dst_rect=(%d,%d,%d,%d)",
             rect_in_dmabuf.x, rect_in_dmabuf.y, rect_in_dmabuf.width, rect_in_dmabuf.height,
             rect_rknn_input.x, rect_rknn_input.y, rect_rknn_input.width, rect_rknn_input.height);
@@ -683,23 +689,9 @@ static gpointer rknn_task_func(gpointer data)
         // Save RGB result as BMP (24-bit) for debugging
         // save_rgb_to_bmp("out.bmp", (unsigned char*)(filter->cached_dmabuf_ptr[1]), filter->model_width, filter->model_height);
 
-        // prepare inference
-        filter->rknn_inputs[0].buf = filter->cached_dmabuf_ptr[1];
-        rknn_inputs_set(filter->rknn_ctx, filter->rknn_io_num.n_input, filter->rknn_inputs);
-
-        rknn_output outputs[filter->rknn_io_num.n_output];
-        memset(outputs, 0, sizeof(outputs));
-        for (int i = 0; i < filter->rknn_io_num.n_output; i++) {
-            outputs[i].index = i;
-            outputs[i].want_float = 0;
-        }
-
-        // 执行推理
-        ret = rknn_run(filter->rknn_ctx, NULL);
-        ret = rknn_outputs_get(filter->rknn_ctx, filter->rknn_io_num.n_output, outputs, NULL);
-
+        filter->rknn_process.inputs[0].buf = filter->cached_dmabuf_ptr[1];
+        rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2],0.25,0.45);
         
-
         // usleep(100000); // 模拟处理延时
         // GST_DEBUG_OBJECT(filter, "Processing buffer with size: %zu", mem_size);
 
