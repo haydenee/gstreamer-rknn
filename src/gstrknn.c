@@ -164,14 +164,16 @@ gst_plugin_rknn_finalize(GObject* object)
         gst_caps_unref(filter->src_caps);
     G_OBJECT_CLASS(gst_plugin_rknn_parent_class)->finalize(object);
 
-    if (filter->cached_dmabuf_ptr)
-        dmabuf_munmap(filter->cached_dmabuf_ptr, filter->cached_dmabuf_size);
-    if (filter->cached_dmabuf_fd >= 0)
-        close(filter->cached_dmabuf_fd);
-    if (filter->cached_allocator)
-        gst_object_unref(filter->cached_allocator);
-    if (filter->cached_dmabuf_mem)
-        gst_memory_unref(filter->cached_dmabuf_mem);
+    for (int i = 0; i < MAX_DMABUF_INSTANCES; ++i) {
+        if (filter->cached_dmabuf_ptr[i])
+            dmabuf_munmap(filter->cached_dmabuf_ptr[i], filter->cached_dmabuf_size[i]);
+        if (filter->cached_dmabuf_fd[i] >= 0)
+            close(filter->cached_dmabuf_fd[i]);
+        if (filter->cached_allocator[i])
+            gst_object_unref(filter->cached_allocator[i]);
+        if (filter->cached_dmabuf_mem[i])
+            gst_memory_unref(filter->cached_dmabuf_mem[i]);
+    }
     if (filter->dma_heap_fd >= 0) {
         dmabuf_heap_close(filter->dma_heap_fd);
         filter->dma_heap_fd = -1;
@@ -265,11 +267,13 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
         GST_INFO_OBJECT(filter, "No RKNN model path specified");
     }
 
-    filter->cached_dmabuf_fd = -1;
-    filter->cached_dmabuf_ptr = NULL;
-    filter->cached_dmabuf_size = 0;
-    filter->cached_allocator = NULL;
-    filter->cached_dmabuf_mem = NULL;
+    for (int i = 0; i < MAX_DMABUF_INSTANCES; ++i) {
+        filter->cached_dmabuf_fd[i] = -1;
+        filter->cached_dmabuf_ptr[i] = NULL;
+        filter->cached_dmabuf_size[i] = 0;
+        filter->cached_allocator[i] = NULL;
+        filter->cached_dmabuf_mem[i] = NULL;
+    }
 
     // for rknn task
     filter->queue = g_async_queue_new();
@@ -436,52 +440,56 @@ gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
     /* just push out the incoming buffer without touching it */
     return GST_FLOW_OK;
 }
-gboolean prepare_dmabuf_memory(GstPluginRknn* filter, gsize mem_size, GstMemory** mem)
+gboolean prepare_dmabuf_memory(GstPluginRknn* filter, int index, gsize mem_size, GstMemory** mem)
 {
+    if (index < 0 || index >= MAX_DMABUF_INSTANCES)
+        return FALSE;
+
     // 如果已分配且大小一致，直接复用
-    if (filter->cached_dmabuf_fd >= 0 && filter->cached_dmabuf_size == mem_size) {
-        *mem = filter->cached_dmabuf_mem;
+    if (filter->cached_dmabuf_fd[index] >= 0 && filter->cached_dmabuf_size[index] == mem_size) {
+        *mem = filter->cached_dmabuf_mem[index];
+        return TRUE;
     }
 
     // 释放旧的
-    if (filter->cached_dmabuf_ptr)
-        dmabuf_munmap(filter->cached_dmabuf_ptr, filter->cached_dmabuf_size);
-    if (filter->cached_dmabuf_fd >= 0)
-        close(filter->cached_dmabuf_fd);
-    if (filter->cached_allocator)
-        gst_object_unref(filter->cached_allocator);
-    if (filter->cached_dmabuf_mem)
-        gst_memory_unref(filter->cached_dmabuf_mem);
+    if (filter->cached_dmabuf_ptr[index])
+        dmabuf_munmap(filter->cached_dmabuf_ptr[index], filter->cached_dmabuf_size[index]);
+    if (filter->cached_dmabuf_fd[index] >= 0)
+        close(filter->cached_dmabuf_fd[index]);
+    if (filter->cached_allocator[index])
+        gst_object_unref(filter->cached_allocator[index]);
+    if (filter->cached_dmabuf_mem[index])
+        gst_memory_unref(filter->cached_dmabuf_mem[index]);
 
     // 分配新的
-    filter->cached_dmabuf_fd = dmabuf_heap_alloc(filter->dma_heap_fd, NULL, mem_size);
-    if (filter->cached_dmabuf_fd < 0) {
+    filter->cached_dmabuf_fd[index] = dmabuf_heap_alloc(filter->dma_heap_fd, NULL, mem_size);
+    if (filter->cached_dmabuf_fd[index] < 0) {
         return FALSE;
     }
-    filter->cached_dmabuf_ptr = dmabuf_mmap(filter->cached_dmabuf_fd, mem_size);
-    if (!filter->cached_dmabuf_ptr) {
-        close(filter->cached_dmabuf_fd);
-        filter->cached_dmabuf_fd = -1;
+    filter->cached_dmabuf_ptr[index] = dmabuf_mmap(filter->cached_dmabuf_fd[index], mem_size);
+    if (!filter->cached_dmabuf_ptr[index]) {
+        close(filter->cached_dmabuf_fd[index]);
+        filter->cached_dmabuf_fd[index] = -1;
         return FALSE;
     }
-    filter->cached_allocator = gst_dmabuf_allocator_new();
-    if (!filter->cached_allocator) {
-        dmabuf_munmap(filter->cached_dmabuf_ptr, mem_size);
-        close(filter->cached_dmabuf_fd);
-        filter->cached_dmabuf_fd = -1;
+    filter->cached_allocator[index] = gst_dmabuf_allocator_new();
+    if (!filter->cached_allocator[index]) {
+        dmabuf_munmap(filter->cached_dmabuf_ptr[index], mem_size);
+        close(filter->cached_dmabuf_fd[index]);
+        filter->cached_dmabuf_fd[index] = -1;
         return FALSE;
     }
-    filter->cached_dmabuf_mem = gst_dmabuf_allocator_alloc(filter->cached_allocator, mem_size, filter->cached_dmabuf_fd);
-    if (!filter->cached_dmabuf_mem) {
-        gst_object_unref(filter->cached_allocator);
-        filter->cached_allocator = NULL;
-        dmabuf_munmap(filter->cached_dmabuf_ptr, mem_size);
-        close(filter->cached_dmabuf_fd);
-        filter->cached_dmabuf_fd = -1;
+    filter->cached_dmabuf_mem[index] = gst_dmabuf_allocator_alloc(filter->cached_allocator[index], mem_size, filter->cached_dmabuf_fd[index]);
+    if (!filter->cached_dmabuf_mem[index]) {
+        gst_object_unref(filter->cached_allocator[index]);
+        filter->cached_allocator[index] = NULL;
+        dmabuf_munmap(filter->cached_dmabuf_ptr[index], mem_size);
+        close(filter->cached_dmabuf_fd[index]);
+        filter->cached_dmabuf_fd[index] = -1;
         return FALSE;
     }
-    filter->cached_dmabuf_size = mem_size;
-    *mem = filter->cached_dmabuf_mem;
+    filter->cached_dmabuf_size[index] = mem_size;
+    *mem = filter->cached_dmabuf_mem[index];
     return TRUE;
 }
 static gpointer rknn_task_func(gpointer data)
@@ -550,13 +558,21 @@ static gpointer rknn_task_func(gpointer data)
             GST_DEBUG_OBJECT(filter, "Processing non-DMABUF memory");
             // will convert to DMABUF memory
             mem_size = gst_memory_get_sizes(mem_in, NULL, NULL);
-            if (!prepare_dmabuf_memory(filter, mem_size, &mem_in_dmabuf)) {
+            if (!prepare_dmabuf_memory(filter, 0, mem_size, &mem_in_dmabuf)) {
                 GST_ERROR_OBJECT(filter, "Failed to prepare DMABUF memory");
                 gst_buffer_unref(buf);
                 gst_buffer_unref(buf);
                 continue;
             }
         }
+        if (!mem_in_dmabuf) {
+            GST_ERROR_OBJECT(filter, "Failed to get DMABUF memory");
+            gst_buffer_unref(buf);
+            gst_buffer_unref(buf);
+            continue;
+        }
+
+        // prepare rknn input buffer
 
         // rga letterboxing
         rga_buffer_t src_buf = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_dmabuf), filter->sink_width, filter->sink_height, filter->sink_width, filter->sink_height, filter->sink_rga_format);

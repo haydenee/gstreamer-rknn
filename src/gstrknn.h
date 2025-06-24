@@ -57,6 +57,7 @@
 #include "rga.h"
 #include "rknn_api.h"
 #define MAX_QUEUE_LENGTH 3
+#define MAX_DMABUF_INSTANCES 4
 
 #define PLUGIN_RKNN_SUPPORT_FORMATS MPP_SUPPORT_FORMATS "," RGA_SUPPORT_FORMATS
 #define MPP_SUPPORT_FORMATS    \
@@ -105,12 +106,12 @@ struct _GstPluginRknn {
 
     int dma_heap_fd;
 
-    int cached_dmabuf_fd;
-    void* cached_dmabuf_ptr;
-    gsize cached_dmabuf_size;
-    GstAllocator* cached_allocator;
-    GstMemory* cached_dmabuf_mem;
-
+    int cached_dmabuf_fd[MAX_DMABUF_INSTANCES];
+    void* cached_dmabuf_ptr[MAX_DMABUF_INSTANCES];
+    gsize cached_dmabuf_size[MAX_DMABUF_INSTANCES];
+    GstAllocator* cached_allocator[MAX_DMABUF_INSTANCES];
+    GstMemory* cached_dmabuf_mem[MAX_DMABUF_INSTANCES];
+    
     guint sink_width;
     guint sink_height;
     GstVideoFormat sink_format;
@@ -124,6 +125,8 @@ struct _GstPluginRknn {
     guint model_width;
     guint model_height;
     guint model_channel;
+
+
 };
 
 G_END_DECLS
