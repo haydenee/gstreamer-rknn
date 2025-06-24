@@ -103,6 +103,39 @@ gboolean save_rgb_to_bmp(const char* filename, const unsigned char* rgb_data, in
     fclose(fout);
     return TRUE;
 }
+int calc_buffer_size(int width, int height, GstVideoFormat gst_format)
+{
+    for (unsigned int i = 0; i < sizeof(gst_rga_formats)/sizeof(gst_rga_formats[0]); i++) {
+        if (gst_rga_formats[i].gst_format == gst_format) {
+            if (gst_rga_formats[i].yuv) {
+                // 针对不同YUV格式分别计算
+                switch (gst_format) {
+                    case GST_VIDEO_FORMAT_I420:
+                    case GST_VIDEO_FORMAT_YV12:
+                    case GST_VIDEO_FORMAT_NV12:
+                    case GST_VIDEO_FORMAT_NV21:
+                        // YUV 4:2:0
+                        return width * height * 3 / 2;
+                    case GST_VIDEO_FORMAT_Y42B:
+                        // YUV 4:2:2 planar
+                        return width * height * 2;
+                    case GST_VIDEO_FORMAT_NV16:
+                    case GST_VIDEO_FORMAT_NV61:
+                        // YUV 4:2:2 semi-planar
+                        return width * height * 2;
+                    default:
+                        // 其他YUV格式可根据实际需求补充
+                        return 0;
+                }
+            } else {
+                // RGB/BGR等格式
+                return width * height * gst_rga_formats[i].pixel_stride0;
+            }
+        }
+    }
+    // 未知格式
+    return 0;
+}
 #ifdef __cplusplus
 }
 #endif

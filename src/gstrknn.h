@@ -47,7 +47,7 @@
 #ifndef __GST_PLUGIN_RKNN_H__
 #define __GST_PLUGIN_RKNN_H__
 
-#include "glibconfig.h"
+#include "glib.h"
 #include "gst/gsttask.h"
 #include "gst/video/video-format.h"
 #include "gst/video/video-info.h"
@@ -120,6 +120,7 @@ struct _GstPluginRknn {
 
     rknn_context rknn_ctx;
     rknn_input rknn_inputs[1];
+    rknn_input_output_num rknn_io_num;
     char *rknn_model_path;
     gboolean rknn_model_loaded;
     guint model_width;

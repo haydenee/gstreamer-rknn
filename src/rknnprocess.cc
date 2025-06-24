@@ -12,7 +12,7 @@ static void dump_tensor_attr(rknn_tensor_attr *attr);
 #ifdef __cplusplus
 extern "C" {
 #endif
-int rknn_prepare(const char* model_name, rknn_context ctx, rknn_input* input, int* model_width, int* model_height, int* model_channel)
+int rknn_prepare(const char* model_name, rknn_context ctx, rknn_input* input, rknn_input_output_num* io_num, int* model_width, int* model_height, int* model_channel)
 {
     int ret;
     /* Create the neural network */
@@ -33,17 +33,16 @@ int rknn_prepare(const char* model_name, rknn_context ctx, rknn_input* input, in
     }
     printf("sdk version: %s driver version: %s\n", version.api_version, version.drv_version);
 
-    rknn_input_output_num io_num;
-    ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
+    ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, io_num, sizeof(*io_num));
     if (ret < 0) {
         printf("rknn_init error ret=%d\n", ret);
         return -1;
     }
-    printf("model input num: %d, output num: %d\n", io_num.n_input, io_num.n_output);
+    printf("model input num: %d, output num: %d\n", io_num->n_input, io_num->n_output);
 
-    rknn_tensor_attr input_attrs[io_num.n_input];
+    rknn_tensor_attr input_attrs[io_num->n_input];
     memset(input_attrs, 0, sizeof(input_attrs));
-    for (int i = 0; i < io_num.n_input; i++) {
+    for (int i = 0; i < io_num->n_input; i++) {
         input_attrs[i].index = i;
         ret = rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &(input_attrs[i]), sizeof(rknn_tensor_attr));
         if (ret < 0) {
@@ -53,9 +52,9 @@ int rknn_prepare(const char* model_name, rknn_context ctx, rknn_input* input, in
         dump_tensor_attr(&(input_attrs[i]));
     }
 
-    rknn_tensor_attr output_attrs[io_num.n_output];
+    rknn_tensor_attr output_attrs[io_num->n_output];
     memset(output_attrs, 0, sizeof(output_attrs));
-    for (int i = 0; i < io_num.n_output; i++) {
+    for (int i = 0; i < io_num->n_output; i++) {
         output_attrs[i].index = i;
         ret = rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &(output_attrs[i]), sizeof(rknn_tensor_attr));
         dump_tensor_attr(&(output_attrs[i]));
