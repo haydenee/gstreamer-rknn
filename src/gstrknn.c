@@ -58,6 +58,7 @@
 
 #include "glib.h"
 #include "gst/allocators/gstdmabuf.h"
+#include "gst/gstbuffer.h"
 #include "gst/gstinfo.h"
 #include "gst/gstmemory.h"
 #include "gst/gstpad.h"
@@ -394,6 +395,15 @@ gst_plugin_rknn_src_event(GstPad* pad, GstObject* parent, GstEvent* event)
         GstCaps* caps;
         gst_event_parse_caps(event, &caps);
 
+        GstCaps* rgb_caps = gst_caps_new_simple(
+            "video/x-raw",
+            "format", G_TYPE_STRING, "RGB",
+            "width", G_TYPE_INT, filter->sink_width,
+            "height", G_TYPE_INT, filter->sink_height,
+            NULL);
+        gst_pad_set_caps(pad, rgb_caps);
+        gst_caps_unref(rgb_caps);
+
         if (filter->src_caps)
             gst_caps_unref(filter->src_caps);
         filter->src_caps = gst_caps_copy(caps);
@@ -447,7 +457,8 @@ gboolean prepare_dmabuf_memory(GstPluginRknn* filter, int index, gsize mem_size,
         return FALSE;
 
     // 如果已分配且大小一致，直接复用
-    if (filter->cached_dmabuf_fd[index] >= 0 && filter->cached_dmabuf_size[index] == mem_size) {
+    if (filter->cached_dmabuf_fd[index] >= 0 && filter->cached_dmabuf_size[index] == mem_size &&
+        filter->cached_dmabuf_mem[index]) {
         *mem = filter->cached_dmabuf_mem[index];
         return TRUE;
     }
@@ -689,18 +700,20 @@ static gpointer rknn_task_func(gpointer data)
         // Save RGB result as BMP (24-bit) for debugging
         // save_rgb_to_bmp("out.bmp", (unsigned char*)(filter->cached_dmabuf_ptr[1]), filter->model_width, filter->model_height);
 
+        // gst_buffer_unref(buf);
+
         filter->rknn_process.inputs[0].buf = filter->cached_dmabuf_ptr[1];
-        rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2],0.25,0.45);
-        
+        rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2], 0.25, 0.45);
+
         // usleep(100000); // 模拟处理延时
         // GST_DEBUG_OBJECT(filter, "Processing buffer with size: %zu", mem_size);
 
-        gst_pad_push(filter->srcpad, buf);
         // if (ret < 0) {
         //     GST_WARNING_OBJECT(filter, "Failed to push buffer, ret = %d", ret);
         // }
-        gst_buffer_unref(buf);
 
+        gst_pad_push(filter->srcpad, buf);
+        gst_buffer_unref(buf);
         // print time consumed
         GST_DEBUG_OBJECT(filter, "Processing time: %ld us",
             g_get_monotonic_time() - current_time);

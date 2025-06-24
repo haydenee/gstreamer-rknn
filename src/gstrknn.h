@@ -48,6 +48,7 @@
 #define __GST_PLUGIN_RKNN_H__
 
 #include "glib.h"
+#include "gst/gstbuffer.h"
 #include "gst/gsttask.h"
 #include "gst/video/video-format.h"
 #include "gst/video/video-info.h"
@@ -112,6 +113,8 @@ struct _GstPluginRknn {
     gsize cached_dmabuf_size[MAX_DMABUF_INSTANCES];
     GstAllocator* cached_allocator[MAX_DMABUF_INSTANCES];
     GstMemory* cached_dmabuf_mem[MAX_DMABUF_INSTANCES];
+
+    GstBuffer* src_buffer;
     
     guint sink_width;
     guint sink_height;
