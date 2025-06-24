@@ -83,7 +83,7 @@ int main(int argc, char** argv)
     // improcess options
     im_opt_t opt;
     memset(&opt, 0, sizeof(opt));
-    opt.color = 0xaa0000; // black background fill color (ARGB)
+    opt.color = 0x000000; // black background fill color (ARGB)
 
     int usage = IM_SYNC; // enable background fill
 

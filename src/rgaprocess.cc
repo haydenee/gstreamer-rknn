@@ -53,6 +53,56 @@ GstVideoFormat rga_to_gst_format(RgaSURF_FORMAT rga_format)
   return GST_VIDEO_FORMAT_UNKNOWN;
 }
 
+gboolean save_rgb_to_bmp(const char* filename, const unsigned char* rgb_data, int width, int height)
+{
+    FILE* fout = fopen(filename, "wb");
+    if (!fout) {
+        return FALSE;
+    }
+
+    int row_stride = width * 3;
+    int pad = (4 - (row_stride % 4)) % 4;
+    int bmp_data_size = (row_stride + pad) * height;
+    int file_size = 54 + bmp_data_size;
+
+    // BMP file header (14 bytes)
+    unsigned char bmp_file_header[14] = {
+        'B', 'M',
+        file_size, file_size >> 8, file_size >> 16, file_size >> 24,
+        0, 0, 0, 0,
+        54, 0, 0, 0
+    };
+
+    // BMP info header (40 bytes)
+    unsigned char bmp_info_header[40] = {
+        40, 0, 0, 0,
+        width, width >> 8, width >> 16, width >> 24,
+        height, height >> 8, height >> 16, height >> 24,
+        1, 0,
+        24, 0,
+        0, 0, 0, 0,
+        bmp_data_size, bmp_data_size >> 8, bmp_data_size >> 16, bmp_data_size >> 24,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0
+    };
+
+    fwrite(bmp_file_header, 1, 14, fout);
+    fwrite(bmp_info_header, 1, 40, fout);
+
+    unsigned char pad_bytes[3] = { 0, 0, 0 };
+    for (int y = height - 1; y >= 0; y--) {
+        const unsigned char* row = rgb_data + y * width * 3;
+        for (int x = 0; x < width; x++) {
+            unsigned char bgr[3] = { row[x * 3 + 2], row[x * 3 + 1], row[x * 3 + 0] };
+            fwrite(bgr, 1, 3, fout);
+        }
+        fwrite(pad_bytes, 1, pad, fout);
+    }
+    fclose(fout);
+    return TRUE;
+}
 #ifdef __cplusplus
 }
 #endif

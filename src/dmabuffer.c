@@ -20,7 +20,7 @@ int dmabuf_heap_open()
 	{
 		return dma_heap_fd;
 	}
-	static const char *heap_name = "/dev/dma_heap/reserved";
+	static const char *heap_name = "/dev/dma_heap/cma@0";
 
 	int fd = open(heap_name, O_RDWR, 0);
 	if (fd >= 0) {
@@ -74,4 +74,29 @@ void dmabuf_munmap(void *ptr, size_t size)
     if (munmap(ptr, size) < 0) {
         perror("munmap failed");
     }
+}
+
+static int dmabuf_sync(int buf_fd, bool start)
+{
+	struct dma_buf_sync sync = { 0 };
+
+	sync.flags = (start ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) |
+		     DMA_BUF_SYNC_RW;
+
+	do {
+		if (ioctl(buf_fd, DMA_BUF_IOCTL_SYNC, &sync) == 0)
+			return 0;
+	} while ((errno == EINTR) || (errno == EAGAIN));
+
+	return -1;
+}
+
+int dmabuf_sync_start(int buf_fd)
+{
+	return dmabuf_sync(buf_fd, true);
+}
+
+int dmabuf_sync_stop(int buf_fd)
+{
+	return dmabuf_sync(buf_fd, false);
 }
