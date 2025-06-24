@@ -61,6 +61,7 @@
 #include "gst/gstmemory.h"
 #include "gst/gstpad.h"
 #include "gst/video/video-info.h"
+#include "rknnprocess.h"
 #include <unistd.h>
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -75,8 +76,8 @@
 #include "RgaUtils.h"
 #include "im2d.h"
 #include "rga.h"
-#include "stdio.h"
 #include "rgaprocess.h"
+#include "stdio.h"
 GST_DEBUG_CATEGORY_STATIC(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
@@ -90,6 +91,7 @@ enum {
     PROP_0,
     PROP_SILENT = 1,
     PROP_BYPASS = 2,
+    PROP_MODEL_PATH = 3,
 } PROP_ID;
 
 /* the capabilities of the inputs and outputs.
@@ -174,6 +176,9 @@ gst_plugin_rknn_finalize(GObject* object)
         dmabuf_heap_close(filter->dma_heap_fd);
         filter->dma_heap_fd = -1;
     }
+
+    if (filter->rknn_model_path)
+        g_free(filter->rknn_model_path);
 }
 
 static void
@@ -196,6 +201,10 @@ gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
         g_param_spec_boolean("bypass", "Bypass",
             "Bypass the filter and just pass through the data",
             FALSE, G_PARAM_READWRITE));
+    g_object_class_install_property(gobject_class, PROP_MODEL_PATH,
+        g_param_spec_string("model-path", "Model Path",
+            "Path to the RKNN model file",
+            NULL, G_PARAM_READWRITE));
 
     gst_element_class_set_details_simple(gstelement_class,
         "Rknn Plugin",
@@ -244,6 +253,18 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
         GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", filter->dma_heap_fd);
     }
 
+    filter->rknn_model_loaded = FALSE;
+    if (filter->rknn_model_path) {
+        GST_INFO_OBJECT(filter, "Using RKNN model: %s", filter->rknn_model_path);
+        rknn_prepare(filter->rknn_model_path, filter->rknn_ctx, filter->rknn_inputs,
+            (int*)&filter->model_width, (int*)&filter->model_height, (int*)&filter->model_channel);
+        GST_INFO_OBJECT(filter, "RKNN model loaded: width=%d, height=%d, channel=%d",
+            filter->model_width, filter->model_height, filter->model_channel);
+        filter->rknn_model_loaded = TRUE;
+    } else {
+        GST_INFO_OBJECT(filter, "No RKNN model path specified");
+    }
+
     filter->cached_dmabuf_fd = -1;
     filter->cached_dmabuf_ptr = NULL;
     filter->cached_dmabuf_size = 0;
@@ -273,6 +294,13 @@ gst_plugin_rknn_set_property(GObject* object, guint prop_id,
     case PROP_BYPASS:
         filter->bypass = g_value_get_boolean(value);
         break;
+    case PROP_MODEL_PATH:
+        if (filter->rknn_model_path)
+            g_free(filter->rknn_model_path);
+        filter->rknn_model_path = g_value_dup_string(value);
+        GST_INFO_OBJECT(filter, "Set RKNN model path to: %s",
+            filter->rknn_model_path);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -291,6 +319,9 @@ gst_plugin_rknn_get_property(GObject* object, guint prop_id,
         break;
     case PROP_BYPASS:
         g_value_set_boolean(value, filter->bypass);
+        break;
+    case PROP_MODEL_PATH:
+        g_value_set_string(value, filter->rknn_model_path);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -460,6 +491,16 @@ static gpointer rknn_task_func(gpointer data)
     GstPluginRknn* filter = task_data->filter;
     GST_INFO_OBJECT(filter, "Starting rknn task thread");
     while (!task_data->stop) {
+
+        if (filter->rknn_model_path && !filter->rknn_model_loaded) {
+            GST_INFO_OBJECT(filter, "Using RKNN model: %s", filter->rknn_model_path);
+            rknn_prepare(filter->rknn_model_path, filter->rknn_ctx, filter->rknn_inputs,
+                (int*)&filter->model_width, (int*)&filter->model_height, (int*)&filter->model_channel);
+            GST_INFO_OBJECT(filter, "RKNN model loaded: width=%d, height=%d, channel=%d",
+                filter->model_width, filter->model_height, filter->model_channel);
+            filter->rknn_model_loaded = TRUE;
+        }
+
         GstBuffer* buf = g_async_queue_pop(filter->queue);
 
         if (task_data->stop) {

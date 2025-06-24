@@ -55,6 +55,7 @@
 #include "RgaUtils.h"
 #include "im2d.h"
 #include "rga.h"
+#include "rknn_api.h"
 #define MAX_QUEUE_LENGTH 3
 
 #define PLUGIN_RKNN_SUPPORT_FORMATS MPP_SUPPORT_FORMATS "," RGA_SUPPORT_FORMATS
@@ -115,6 +116,14 @@ struct _GstPluginRknn {
     GstVideoFormat sink_format;
     GstVideoInfo sink_info;
     RgaSURF_FORMAT sink_rga_format;
+
+    rknn_context rknn_ctx;
+    rknn_input rknn_inputs[1];
+    char *rknn_model_path;
+    gboolean rknn_model_loaded;
+    guint model_width;
+    guint model_height;
+    guint model_channel;
 };
 
 G_END_DECLS

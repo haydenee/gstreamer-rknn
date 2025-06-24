@@ -13,7 +13,8 @@ configure_file(output : 'config.h', configuration : cdata)
 plugin_sources = [
   'gstrknn.c',
   'rgaprocess.cc',
-  'dmabuffer.c'
+  'dmabuffer.c',
+  'rknnprocess.cc',
   ]
 
 gstpluginrknn = library('gstrknn',

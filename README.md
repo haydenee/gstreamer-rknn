@@ -1,4 +1,6 @@
 
+It is only written for rk3588 + yolo v5
+
 NV12 is the preffered output format if next element is mpp encoder, other formats (e.g. NV16) will require additional conversion step in mpp plugin.
 
 Reference:
