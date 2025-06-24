@@ -56,6 +56,7 @@
  * </refsect2>
  */
 
+#include "gst/allocators/gstdmabuf.h"
 #include "gst/gstinfo.h"
 #include "gst/gstmemory.h"
 #include "gst/gstpad.h"
@@ -66,7 +67,9 @@
 
 #include <gst/gst.h>
 
+#include "dmabuffer.h"
 #include "gstrknn.h"
+int g_dma_heap_fd;
 
 GST_DEBUG_CATEGORY_STATIC(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
@@ -152,6 +155,11 @@ gst_plugin_rknn_finalize(GObject* object)
     if (filter->src_caps)
         gst_caps_unref(filter->src_caps);
     G_OBJECT_CLASS(gst_plugin_rknn_parent_class)->finalize(object);
+
+    if (g_dma_heap_fd >= 0) {
+        dmabuf_heap_close(g_dma_heap_fd);
+        g_dma_heap_fd = -1;
+    }
 }
 
 static void
@@ -215,6 +223,15 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     filter->sink_caps = NULL;
     filter->src_caps = NULL;
 
+    g_dma_heap_fd = dmabuf_heap_open();
+    if (g_dma_heap_fd < 0) {
+        GST_ERROR_OBJECT(filter, "Failed to open DMA-BUF heap");
+    }
+    else {
+        GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", g_dma_heap_fd);
+    }
+
+    // for rknn task
     filter->queue = g_async_queue_new();
     GST_LOG_OBJECT(filter, "gst_plugin_rknn_init");
     filter->task_data = g_new0(RknnTaskData, 1);
@@ -393,9 +410,95 @@ static gpointer rknn_task_func(gpointer data)
             gst_buffer_unref(buf);
             continue;
         }
-        // 这里做耗时的推理或处理
 
+        // start of processing
+
+        GstMemory* mem_in = gst_buffer_peek_memory(buf, 0);
+        GstMemory* mem_in_dmabuf = NULL;
+        void* dmabuf_ptr;
+        int dmabuf_fd = -1;
+        GstAllocator* allocator = NULL;
+        gsize mem_size = 0;
+        if (!mem_in) {
+            GST_ERROR_OBJECT(filter, "Failed to get memory from buffer");
+            gst_buffer_unref(buf);
+            continue;
+        }
+        if (gst_is_dmabuf_memory(mem_in)) {
+            GST_DEBUG_OBJECT(filter, "Processing DMABUF memory");
+            // no conversion needed
+            mem_in_dmabuf = mem_in;
+            mem_size = gst_memory_get_sizes(mem_in, NULL, NULL);
+        } else {
+            GST_DEBUG_OBJECT(filter, "Processing non-DMABUF memory");
+            // will convert to DMABUF memory
+            mem_size = gst_memory_get_sizes(mem_in, NULL, NULL);
+            dmabuf_fd = dmabuf_heap_alloc(g_dma_heap_fd, NULL, mem_size);
+            if (dmabuf_fd < 0) {
+                GST_ERROR_OBJECT(filter, "Failed to allocate DMA-BUF");
+                gst_buffer_unref(buf);
+                continue;
+            }
+            dmabuf_ptr = dmabuf_mmap(dmabuf_fd, mem_size);
+            if (!dmabuf_ptr) {
+                GST_ERROR_OBJECT(filter, "Failed to mmap DMA-BUF");
+                close(dmabuf_fd);
+                gst_buffer_unref(buf);
+                continue;
+            }
+
+            // Copy data from original memory to DMA-BUF
+            GstMapInfo map_in;
+            if (!gst_memory_map(mem_in, &map_in, GST_MAP_READ)) {
+                GST_ERROR_OBJECT(filter, "Failed to map input memory");
+                dmabuf_munmap(dmabuf_ptr, mem_size);
+                close(dmabuf_fd);
+                gst_buffer_unref(buf);
+                continue;
+            }
+
+            // Copy data from original memory to DMA-BUF
+            memcpy(dmabuf_ptr, map_in.data, mem_size);
+            gst_memory_unmap(mem_in, &map_in);
+
+            // Create a new DMABUF memory
+            allocator = gst_dmabuf_allocator_new();
+            if (!allocator) {
+                GST_ERROR_OBJECT(filter, "Failed to get DMABUF allocator");
+                dmabuf_munmap(dmabuf_ptr, mem_size);
+                close(dmabuf_fd);
+                gst_buffer_unref(buf);
+                continue;
+            }
+            mem_in_dmabuf = gst_dmabuf_allocator_alloc(allocator,
+                mem_size, dmabuf_fd);
+            if (!mem_in_dmabuf) {
+                GST_ERROR_OBJECT(filter, "Failed to create DMABUF memory");
+                dmabuf_munmap(dmabuf_ptr, mem_size);
+                close(dmabuf_fd);
+                gst_buffer_unref(buf);
+                continue;
+            }
+        }
         usleep(100000); // 模拟处理延时
+        GST_LOG_OBJECT(filter, "Processing buffer with size: %zu", mem_size);
+
+        // take care of everything related with mem_in_dmabuf memory
+        if (!gst_is_dmabuf_memory(mem_in)) {
+            // Only free if we created it
+            if (mem_in_dmabuf) {
+                gst_memory_unref(mem_in_dmabuf);
+            }
+            if (dmabuf_ptr) {
+                dmabuf_munmap(dmabuf_ptr, mem_size);
+            }
+            if (dmabuf_fd >= 0) {
+                close(dmabuf_fd);
+            }
+            if (allocator) {
+                gst_object_unref(allocator);
+            }
+        }
 
         gst_pad_push(filter->srcpad, buf);
         if (ret != GST_FLOW_OK) {
