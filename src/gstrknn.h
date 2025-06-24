@@ -97,6 +97,12 @@ struct _GstPluginRknn {
     GstCaps* src_caps;
 
     gint64 last_buffer_full_log_time;
+
+    int cached_dmabuf_fd;
+    void* cached_dmabuf_ptr;
+    gsize cached_dmabuf_size;
+    GstAllocator* cached_allocator;
+    GstMemory* cached_dmabuf_mem;
 };
 
 G_END_DECLS
