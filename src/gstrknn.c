@@ -60,17 +60,23 @@
 #include "gst/gstinfo.h"
 #include "gst/gstmemory.h"
 #include "gst/gstpad.h"
+#include "gst/video/video-info.h"
 #include <unistd.h>
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
 
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #include "dmabuffer.h"
 #include "gstrknn.h"
-int g_dma_heap_fd;
 
+#include "RgaUtils.h"
+#include "im2d.h"
+#include "rga.h"
+#include "stdio.h"
+#include "rgaprocess.h"
 GST_DEBUG_CATEGORY_STATIC(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
@@ -164,9 +170,9 @@ gst_plugin_rknn_finalize(GObject* object)
         gst_object_unref(filter->cached_allocator);
     if (filter->cached_dmabuf_mem)
         gst_memory_unref(filter->cached_dmabuf_mem);
-    if (g_dma_heap_fd >= 0) {
-        dmabuf_heap_close(g_dma_heap_fd);
-        g_dma_heap_fd = -1;
+    if (filter->dma_heap_fd >= 0) {
+        dmabuf_heap_close(filter->dma_heap_fd);
+        filter->dma_heap_fd = -1;
     }
 }
 
@@ -185,7 +191,7 @@ gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
 
     g_object_class_install_property(gobject_class, PROP_SILENT,
         g_param_spec_boolean("silent", "Silent", "Produce verbose output ?",
-            FALSE, G_PARAM_READWRITE));
+            TRUE, G_PARAM_READWRITE));
     g_object_class_install_property(gobject_class, PROP_BYPASS,
         g_param_spec_boolean("bypass", "Bypass",
             "Bypass the filter and just pass through the data",
@@ -231,11 +237,11 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     filter->sink_caps = NULL;
     filter->src_caps = NULL;
 
-    g_dma_heap_fd = dmabuf_heap_open();
-    if (g_dma_heap_fd < 0) {
+    filter->dma_heap_fd = dmabuf_heap_open();
+    if (filter->dma_heap_fd < 0) {
         GST_ERROR_OBJECT(filter, "Failed to open DMA-BUF heap");
     } else {
-        GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", g_dma_heap_fd);
+        GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", filter->dma_heap_fd);
     }
 
     filter->cached_dmabuf_fd = -1;
@@ -317,8 +323,18 @@ gst_plugin_rknn_sink_event(GstPad* pad, GstObject* parent,
         if (filter->sink_caps)
             gst_caps_unref(filter->sink_caps);
         filter->sink_caps = gst_caps_copy(caps);
-
         GST_INFO_OBJECT(filter, "Negotiated sink caps: %" GST_PTR_FORMAT, filter->sink_caps);
+        if (gst_video_info_from_caps(&filter->sink_info, filter->sink_caps)) {
+            filter->sink_width = GST_VIDEO_INFO_WIDTH(&filter->sink_info);
+            filter->sink_height = GST_VIDEO_INFO_HEIGHT(&filter->sink_info);
+            filter->sink_format = GST_VIDEO_INFO_FORMAT(&filter->sink_info);
+            filter->sink_rga_format = gst_to_rga_format(filter->sink_format);
+            GST_INFO_OBJECT(filter, "Sink pad video info: width=%d, height=%d, format=%s",
+                filter->sink_width, filter->sink_height,
+                gst_video_format_to_string(filter->sink_format));
+        } else {
+            GST_ERROR_OBJECT(filter, "Failed to parse video info from sink caps");
+        }
 
         /* and forward */
         ret = gst_pad_event_default(pad, parent, event);
@@ -389,11 +405,11 @@ gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
     /* just push out the incoming buffer without touching it */
     return GST_FLOW_OK;
 }
-gboolean prepare_dmabuf_memory(GstPluginRknn* filter, gsize mem_size, GstMemory* mem)
+gboolean prepare_dmabuf_memory(GstPluginRknn* filter, gsize mem_size, GstMemory** mem)
 {
     // 如果已分配且大小一致，直接复用
     if (filter->cached_dmabuf_fd >= 0 && filter->cached_dmabuf_size == mem_size) {
-        mem = filter->cached_dmabuf_mem;
+        *mem = filter->cached_dmabuf_mem;
     }
 
     // 释放旧的
@@ -407,7 +423,7 @@ gboolean prepare_dmabuf_memory(GstPluginRknn* filter, gsize mem_size, GstMemory*
         gst_memory_unref(filter->cached_dmabuf_mem);
 
     // 分配新的
-    filter->cached_dmabuf_fd = dmabuf_heap_alloc(g_dma_heap_fd, NULL, mem_size);
+    filter->cached_dmabuf_fd = dmabuf_heap_alloc(filter->dma_heap_fd, NULL, mem_size);
     if (filter->cached_dmabuf_fd < 0) {
         return FALSE;
     }
@@ -434,7 +450,7 @@ gboolean prepare_dmabuf_memory(GstPluginRknn* filter, gsize mem_size, GstMemory*
         return FALSE;
     }
     filter->cached_dmabuf_size = mem_size;
-    mem = filter->cached_dmabuf_mem;
+    *mem = filter->cached_dmabuf_mem;
     return TRUE;
 }
 static gpointer rknn_task_func(gpointer data)
@@ -474,6 +490,7 @@ static gpointer rknn_task_func(gpointer data)
 
         // start of processing
 
+        // Normalize to DMABUF memory
         GstMemory* mem_in = gst_buffer_peek_memory(buf, 0);
         GstMemory* mem_in_dmabuf = NULL;
         gsize mem_size = 0;
@@ -492,13 +509,17 @@ static gpointer rknn_task_func(gpointer data)
             GST_DEBUG_OBJECT(filter, "Processing non-DMABUF memory");
             // will convert to DMABUF memory
             mem_size = gst_memory_get_sizes(mem_in, NULL, NULL);
-            if (!prepare_dmabuf_memory(filter, mem_size, mem_in_dmabuf)) {
+            if (!prepare_dmabuf_memory(filter, mem_size, &mem_in_dmabuf)) {
                 GST_ERROR_OBJECT(filter, "Failed to prepare DMABUF memory");
                 gst_buffer_unref(buf);
                 gst_buffer_unref(buf);
                 continue;
             }
         }
+
+        // rga letterboxing
+        rga_buffer_t src_buf = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_dmabuf), filter->sink_width, filter->sink_height, filter->sink_width, filter->sink_height, filter->sink_rga_format);
+
         usleep(100000); // 模拟处理延时
         GST_LOG_OBJECT(filter, "Processing buffer with size: %zu", mem_size);
 

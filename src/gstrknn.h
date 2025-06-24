@@ -49,8 +49,12 @@
 
 #include "glibconfig.h"
 #include "gst/gsttask.h"
+#include "gst/video/video-format.h"
+#include "gst/video/video-info.h"
 #include <gst/gst.h>
-
+#include "RgaUtils.h"
+#include "im2d.h"
+#include "rga.h"
 #define MAX_QUEUE_LENGTH 3
 
 #define PLUGIN_RKNN_SUPPORT_FORMATS MPP_SUPPORT_FORMATS "," RGA_SUPPORT_FORMATS
@@ -98,11 +102,19 @@ struct _GstPluginRknn {
 
     gint64 last_buffer_full_log_time;
 
+    int dma_heap_fd;
+
     int cached_dmabuf_fd;
     void* cached_dmabuf_ptr;
     gsize cached_dmabuf_size;
     GstAllocator* cached_allocator;
     GstMemory* cached_dmabuf_mem;
+
+    guint sink_width;
+    guint sink_height;
+    GstVideoFormat sink_format;
+    GstVideoInfo sink_info;
+    RgaSURF_FORMAT sink_rga_format;
 };
 
 G_END_DECLS
