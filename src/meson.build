@@ -14,7 +14,7 @@ plugin_sources = [
   'gstrknn.c'
   ]
 
-gstpluginexample = library('gstplugin',
+gstpluginrknn = library('gstrknn',
   plugin_sources,
   c_args: plugin_c_args,
   dependencies : [gst_dep, gstbase_dep, gstallocators_dep, gstvideo_dep, gstpbutils_dep, rga_dep, rknn_dep],
