@@ -59,7 +59,8 @@
 #include "rknn_api.h"
 #include "rknnprocess.h"
 #define MAX_QUEUE_LENGTH 3
-#define MAX_DMABUF_INSTANCES 4
+#define MAX_DMABUF_INSTANCES 5
+#define ALIGN_UP(x, align) (((x) + ((align)-1)) & ~((align)-1))
 
 #define PLUGIN_RKNN_SUPPORT_FORMATS MPP_SUPPORT_FORMATS "," RGA_SUPPORT_FORMATS
 #define MPP_SUPPORT_FORMATS    \
@@ -115,6 +116,7 @@ struct _GstPluginRknn {
     GstMemory* cached_dmabuf_mem[MAX_DMABUF_INSTANCES];
 
     GstBuffer* src_buffer;
+    int src_buffer_index;
     
     guint sink_width;
     guint sink_height;
@@ -127,6 +129,13 @@ struct _GstPluginRknn {
 
     gboolean rknn_model_loaded;
     struct _RknnProcess rknn_process;
+
+    gboolean show_fps;
+    gint64 fps_start_time;
+    gint64 fps_frame_count;
+    gdouble current_fps;
+    gint64 fps_update_interval; // in microseconds
+    
 
 };
 

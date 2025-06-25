@@ -96,6 +96,7 @@ enum {
     PROP_BYPASS = 2,
     PROP_MODEL_PATH = 3,
     PROP_LABEL_PATH = 4,
+    PROP_SHOW_FPS = 5,
 } PROP_ID;
 
 /* the capabilities of the inputs and outputs.
@@ -217,7 +218,10 @@ gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
         g_param_spec_string("label-path", "Label Path",
             "Path to the label file",
             NULL, G_PARAM_READWRITE));
-
+    g_object_class_install_property(gobject_class, PROP_SHOW_FPS,
+        g_param_spec_boolean("show-fps", "Show FPS",
+            "Display FPS on output frames",
+            FALSE, G_PARAM_READWRITE));
     gst_element_class_set_details_simple(gstelement_class,
         "Rknn Plugin",
         "FIXME: Rknn Plugin classification",
@@ -244,11 +248,9 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
         GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_event));
     gst_pad_set_chain_function(filter->sinkpad,
         GST_DEBUG_FUNCPTR(gst_plugin_rknn_chain));
-    GST_PAD_SET_PROXY_CAPS(filter->sinkpad);
     gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad);
 
     filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
-    GST_PAD_SET_PROXY_CAPS(filter->srcpad);
     gst_pad_set_event_function(filter->srcpad,
         GST_DEBUG_FUNCPTR(gst_plugin_rknn_src_event));
     gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
@@ -264,6 +266,7 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     } else {
         GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", filter->dma_heap_fd);
     }
+    filter->src_buffer_index = 0;
 
     filter->rknn_model_loaded = FALSE;
     if (filter->rknn_process.model_path) {
@@ -283,6 +286,12 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
         filter->cached_allocator[i] = NULL;
         filter->cached_dmabuf_mem[i] = NULL;
     }
+
+    filter->show_fps = FALSE;
+    filter->fps_start_time = 0;
+    filter->fps_frame_count = 0;
+    filter->current_fps = 0.0;
+    filter->fps_update_interval = 1000000; // 1 second in microseconds
 
     // for rknn task
     filter->queue = g_async_queue_new();
@@ -321,6 +330,11 @@ gst_plugin_rknn_set_property(GObject* object, guint prop_id,
         GST_INFO_OBJECT(filter, "Set RKNN label path to: %s",
             filter->rknn_process.label_path);
         break;
+    case PROP_SHOW_FPS:
+        filter->show_fps = g_value_get_boolean(value);
+        GST_INFO_OBJECT(filter, "Set show FPS to: %s",
+            filter->show_fps ? "TRUE" : "FALSE");
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -345,6 +359,9 @@ gst_plugin_rknn_get_property(GObject* object, guint prop_id,
         break;
     case PROP_LABEL_PATH:
         g_value_set_string(value, (const gchar*)filter->rknn_process.label_path);
+        break;
+    case PROP_SHOW_FPS:
+        g_value_set_boolean(value, filter->show_fps);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -414,15 +431,23 @@ gst_plugin_rknn_sink_event(GstPad* pad, GstObject* parent,
             filter->sink_height = GST_VIDEO_INFO_HEIGHT(&filter->sink_info);
             filter->sink_format = GST_VIDEO_INFO_FORMAT(&filter->sink_info);
             filter->sink_rga_format = gst_to_rga_format(filter->sink_format);
-            GST_INFO_OBJECT(filter, "Sink pad video info: width=%d, height=%d, format=%s",
+
+            // 立即计算对齐后的尺寸
+            filter->aligned_width = ALIGN_UP(filter->sink_width, 16);
+            filter->aligned_height = ALIGN_UP(filter->sink_height, 16);
+
+            GST_INFO_OBJECT(filter, "Sink pad video info: width=%d, height=%d, format=%s, aligned: %dx%d",
                 filter->sink_width, filter->sink_height,
-                gst_video_format_to_string(filter->sink_format));
+                gst_video_format_to_string(filter->sink_format),
+                filter->aligned_width, filter->aligned_height);
+
+            if (!gst_plugin_rknn_ensure_rgb_caps(filter)) {
+                GST_ERROR_OBJECT(filter, "Failed to set RGB caps after sink caps negotiation");
+                return FALSE;
+            }
         } else {
             GST_ERROR_OBJECT(filter, "Failed to parse video info from sink caps");
         }
-
-        /* After sink caps are set, ensure RGB caps on source pad */
-        gst_plugin_rknn_ensure_rgb_caps(filter);
 
         /* and forward */
         ret = gst_pad_event_default(pad, parent, event);
@@ -445,8 +470,6 @@ gst_plugin_rknn_src_event(GstPad* pad, GstObject* parent, GstEvent* event)
     case GST_EVENT_CAPS: {
         GstCaps* caps;
         gst_event_parse_caps(event, &caps);
-
-        gst_plugin_rknn_ensure_rgb_caps(filter);
 
         if (filter->src_caps)
             gst_caps_unref(filter->src_caps);
@@ -486,7 +509,7 @@ gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
         }
 
         if (g_get_monotonic_time() - filter->last_buffer_full_log_time > 1000000) {
-            GST_LOG_OBJECT(filter, "Queue full, dropping oldest buffer. Queue length: %d",
+            GST_WARNING_OBJECT(filter, "Queue full, dropping oldest buffer. Queue length: %d",
                 g_async_queue_length(filter->queue));
             filter->last_buffer_full_log_time = g_get_monotonic_time();
         }
@@ -494,6 +517,26 @@ gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
 
     /* just push out the incoming buffer without touching it */
     return GST_FLOW_OK;
+}
+
+// Add FPS calculation function
+static void calculate_fps(GstPluginRknn* filter)
+{
+    gint64 current_time = g_get_monotonic_time();
+    
+    if (filter->fps_start_time == 0) {
+        filter->fps_start_time = current_time;
+        filter->fps_frame_count = 0;
+    }
+    
+    filter->fps_frame_count++;
+    
+    gint64 elapsed = current_time - filter->fps_start_time;
+    if (elapsed >= filter->fps_update_interval) {
+        filter->current_fps = (gdouble)filter->fps_frame_count * 1000000.0 / elapsed;
+        filter->fps_start_time = current_time;
+        filter->fps_frame_count = 0;
+    }
 }
 gboolean prepare_dmabuf_memory(GstPluginRknn* filter, int index, gsize mem_size, GstMemory** mem)
 {
@@ -558,7 +601,6 @@ gboolean prepare_dmabuf_memory(GstPluginRknn* filter, int index, gsize mem_size,
     *mem = filter->cached_dmabuf_mem[index];
     return TRUE;
 }
-#define ALIGN_UP(x, align) (((x) + ((align)-1)) & ~((align)-1))
 static gpointer rknn_task_func(gpointer data)
 {
     int ret = GST_FLOW_OK;
@@ -670,13 +712,9 @@ static gpointer rknn_task_func(gpointer data)
 
         GstMemory* mem_in_rgb = NULL;
 
-        // Calculate 16-aligned width and height for RGB buffer
-        int aligned_rgb_width = ALIGN_UP(filter->sink_width, 16);
-        int aligned_rgb_height = ALIGN_UP(filter->sink_height, 16);
-        filter->aligned_width = aligned_rgb_width;
-        filter->aligned_height = aligned_rgb_height;
+        filter->src_buffer_index = (filter->src_buffer_index + 1) % (MAX_DMABUF_INSTANCES - 2);
 
-        if (!prepare_dmabuf_memory(filter, 2, calc_buffer_size(aligned_rgb_width, aligned_rgb_height, GST_VIDEO_FORMAT_RGB), &mem_in_rgb)) {
+        if (!prepare_dmabuf_memory(filter, 2 + filter->src_buffer_index, calc_buffer_size(filter->aligned_width, filter->aligned_height, GST_VIDEO_FORMAT_RGB), &mem_in_rgb)) {
             GST_ERROR_OBJECT(filter, "Failed to prepare RGB memory for RGA");
             gst_buffer_unref(buf);
             gst_buffer_unref(buf);
@@ -694,7 +732,7 @@ static gpointer rknn_task_func(gpointer data)
             gst_dmabuf_memory_get_fd(mem_in_dmabuf), gst_dmabuf_memory_get_fd(mem_rknn_in));
         rga_buffer_t rga_buf_in_dmabuf = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_dmabuf), filter->sink_width, filter->sink_height, filter->sink_width, filter->sink_height, filter->sink_rga_format);
         im_rect rect_in_dmabuf = { 0, 0, filter->sink_width, filter->sink_height };
-        rga_buffer_t rga_buf_in_rgb = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_rgb), aligned_rgb_width, aligned_rgb_height, aligned_rgb_width, aligned_rgb_height, RK_FORMAT_RGB_888);
+        rga_buffer_t rga_buf_in_rgb = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_rgb), filter->aligned_width, filter->aligned_height, filter->aligned_width, filter->aligned_height, RK_FORMAT_RGB_888);
         im_rect rect_in_rgb = { 0, 0, filter->sink_width, filter->sink_height };
         rga_buffer_t pat = wrapbuffer_virtualaddr_t(NULL, 0, 0, 0, 0, RK_FORMAT_RGB_888); // pattern unused
         im_rect rect_pat = { 0, 0, 0, 0 }; // pattern rect unused
@@ -733,7 +771,7 @@ static gpointer rknn_task_func(gpointer data)
         filter->rknn_process.scale_h = scale;
         filter->rknn_process.original_width = filter->sink_width;
         filter->rknn_process.original_height = filter->sink_height;
-        GST_LOG_OBJECT(filter, "RGA letterboxing: src_rect=(%d,%d,%d,%d), dst_rect=(%d,%d,%d,%d)",
+        GST_DEBUG_OBJECT(filter, "RGA letterboxing: src_rect=(%d,%d,%d,%d), dst_rect=(%d,%d,%d,%d)",
             rect_in_dmabuf.x, rect_in_dmabuf.y, rect_in_dmabuf.width, rect_in_dmabuf.height,
             rect_rknn_input.x, rect_rknn_input.y, rect_rknn_input.width, rect_rknn_input.height);
 
@@ -757,7 +795,11 @@ static gpointer rknn_task_func(gpointer data)
         // gst_buffer_unref(buf);
 
         filter->rknn_process.inputs[0].buf = filter->cached_dmabuf_ptr[1];
-        rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2], 0.6, 0.45);
+        // Calculate FPS
+        calculate_fps(filter);
+        dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
+        rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2 + filter->src_buffer_index], 0.6, 0.45, filter->show_fps?1:0,filter->current_fps);
+        dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
         // check refcount of out gst memory
 
         if (!filter->src_buffer) {
@@ -771,17 +813,9 @@ static gpointer rknn_task_func(gpointer data)
         GST_BUFFER_PTS(filter->src_buffer) = GST_BUFFER_PTS(buf);
         GST_BUFFER_DTS(filter->src_buffer) = GST_BUFFER_DTS(buf);
         GST_BUFFER_DURATION(filter->src_buffer) = GST_BUFFER_DURATION(buf);
-        GST_BUFFER_OFFSET(filter->src_buffer) = GST_BUFFER_OFFSET(buf);
-        GST_BUFFER_OFFSET_END(filter->src_buffer) = GST_BUFFER_OFFSET_END(buf);
-
-        // 也可以继承flags等
-        // GST_BUFFER_FLAGS(filter->src_buffer) = GST_BUFFER_FLAGS(buf);
-
-        // 继承meta（如video meta、crop meta等）
-        // gst_buffer_copy_into(filter->src_buffer, buf, GST_BUFFER_COPY_METADATA, 0, -1);
 
         // Ensure RGB caps are set before pushing buffer
-        gst_plugin_rknn_ensure_rgb_caps(filter);
+        // gst_plugin_rknn_ensure_rgb_caps(filter);
 
         gst_pad_push(filter->srcpad, filter->src_buffer); // mem_in_rgb refcount=1?
         filter->src_buffer = NULL;

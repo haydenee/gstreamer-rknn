@@ -38,7 +38,10 @@ int rknn_inference_and_postprocess(
     struct _RknnProcess* rknn_process,
     void* orig_img,
     float box_conf_threshold,
-    float nms_threshold);
+    float nms_threshold,
+    int show_fps,      
+    double current_fps      
+);
 void rknn_release(struct _RknnProcess* rknn_process);
 #ifdef __cplusplus
 }

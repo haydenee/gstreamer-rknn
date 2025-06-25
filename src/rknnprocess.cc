@@ -13,7 +13,7 @@ static unsigned char* load_data(FILE* fp, size_t ofst, size_t sz);
 static unsigned char* load_model(const char* filename, int* model_size);
 static void dump_tensor_attr(rknn_tensor_attr* attr);
 static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::Point org, int fontFace, double fontScale, cv::Scalar textColor, cv::Scalar bgColor, int thickness);
-
+static void draw_fps_on_frame(cv::Mat& image, double fps);
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -113,7 +113,10 @@ int rknn_inference_and_postprocess(
     struct _RknnProcess* rknn_process,
     void* orig_img,
     float box_conf_threshold,
-    float nms_threshold)
+    float nms_threshold,
+    int show_fps,      
+    double current_fps      
+)
 {
     int ret;
 
@@ -163,7 +166,9 @@ int rknn_inference_and_postprocess(
         rectangle(orig_img_cv, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 55, 218), 2);
         drawTextWithBackground(orig_img_cv, text, cv::Point(x1 - 1, y1 - 6), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), cv::Scalar(0, 55, 218, 0.5), 2);
     }
-
+    if (show_fps) {
+        draw_fps_on_frame(orig_img_cv, current_fps);
+    }
     // imwrite("inference.bmp", orig_img_cv);
 
     // 释放推理结果
@@ -189,7 +194,36 @@ void rknn_release(struct _RknnProcess* rknn_process)
 #ifdef __cplusplus
 }
 #endif
-
+static void draw_fps_on_frame(cv::Mat& image, double fps)
+{
+    if (fps <= 0.0) {
+        return;
+    }
+    
+    char fps_text[64];
+    snprintf(fps_text, sizeof(fps_text), "FPS: %.1f", fps);
+    
+    // FPS display settings
+    cv::Point fps_position(10, 30);
+    int font_face = cv::FONT_HERSHEY_SIMPLEX;
+    double font_scale = 0.8;
+    cv::Scalar text_color(0, 255, 0); // Green color
+    cv::Scalar bg_color(0, 0, 0); // Black background
+    int thickness = 2;
+    
+    // Get text size for background rectangle
+    int baseline = 0;
+    cv::Size text_size = cv::getTextSize(fps_text, font_face, font_scale, thickness, &baseline);
+    baseline += thickness;
+    
+    // Draw background rectangle
+    cv::Rect text_bg_rect(fps_position.x - 5, fps_position.y - text_size.height - 5, 
+                         text_size.width + 10, text_size.height + baseline + 10);
+    cv::rectangle(image, text_bg_rect, bg_color, cv::FILLED);
+    
+    // Draw FPS text
+    cv::putText(image, fps_text, fps_position, font_face, font_scale, text_color, thickness);
+}
 static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::Point org, int fontFace, double fontScale, cv::Scalar textColor, cv::Scalar bgColor, int thickness)
 {
     int baseline = 0;
