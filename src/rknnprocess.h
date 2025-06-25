@@ -24,18 +24,22 @@ struct _RknnProcess {
     float scale_h;
     int original_width;
     int original_height;
+    unsigned char* model_data;
+    char* label_path;
+    char* model_path;
 };
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int rknn_prepare(const char* model_name, struct _RknnProcess* rknn_process);
-void rknn_inference_and_postprocess(
+int rknn_prepare(struct _RknnProcess* rknn_process);
+int rknn_inference_and_postprocess(
     struct _RknnProcess* rknn_process,
     void* orig_img,
     float box_conf_threshold,
     float nms_threshold);
+void rknn_release(struct _RknnProcess* rknn_process);
 #ifdef __cplusplus
 }
 #endif

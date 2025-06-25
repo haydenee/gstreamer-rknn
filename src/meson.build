@@ -18,7 +18,7 @@ plugin_sources = [
   'postprocess.cc',
   ]
 
-gstpluginrknn = library('gstrknn',
+library('gstrknn',
   plugin_sources,
   c_args: plugin_c_args,
   dependencies : [gst_dep, gstbase_dep, gstallocators_dep, gstvideo_dep, gstpbutils_dep, rga_dep, rknn_dep,rga_dep,opencv_dep],

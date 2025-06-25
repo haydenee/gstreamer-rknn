@@ -118,12 +118,13 @@ struct _GstPluginRknn {
     
     guint sink_width;
     guint sink_height;
+    guint aligned_width;
+    guint aligned_height;
     GstVideoFormat sink_format;
     GstVideoInfo sink_info;
     RgaSURF_FORMAT sink_rga_format;
 
 
-    char *rknn_model_path;
     gboolean rknn_model_loaded;
     struct _RknnProcess rknn_process;
 

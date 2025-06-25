@@ -2,6 +2,7 @@
 #include "opencv2/core/mat.hpp"
 #include "opencv2/opencv.hpp"
 #include "postprocess.h"
+#include "rknn_api.h"
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,18 +12,24 @@
 static unsigned char* load_data(FILE* fp, size_t ofst, size_t sz);
 static unsigned char* load_model(const char* filename, int* model_size);
 static void dump_tensor_attr(rknn_tensor_attr* attr);
+static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::Point org, int fontFace, double fontScale, cv::Scalar textColor, cv::Scalar bgColor, int thickness);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int rknn_prepare(const char* model_name, struct _RknnProcess* rknn_process)
+int rknn_prepare(struct _RknnProcess* rknn_process)
 {
     int ret;
     /* Create the neural network */
     printf("Loading mode...\n");
     int model_data_size = 0;
-    unsigned char* model_data = load_model(model_name, &model_data_size);
-    ret = rknn_init(&rknn_process->ctx, model_data, model_data_size, 0, NULL);
+    if (!rknn_process || !rknn_process->model_path) {
+        printf("rknn_process or model_path is NULL\n");
+        return -1;
+    }
+    rknn_process->model_data = load_model(rknn_process->model_path, &model_data_size);
+    ret = rknn_init(&rknn_process->ctx, rknn_process->model_data, model_data_size, 0, NULL);
     if (ret < 0) {
         printf("rknn_init error ret=%d\n", ret);
         return -1;
@@ -102,7 +109,7 @@ int rknn_prepare(const char* model_name, struct _RknnProcess* rknn_process)
     return 0;
 }
 
-void rknn_inference_and_postprocess(
+int rknn_inference_and_postprocess(
     struct _RknnProcess* rknn_process,
     void* orig_img,
     float box_conf_threshold,
@@ -138,32 +145,60 @@ void rknn_inference_and_postprocess(
         rknn_process->scale_h,
         out_zps,
         out_scales,
-        &detect_result_group);
+        &detect_result_group,
+        rknn_process->label_path
+    );
 
     // 画框和概率
     char text[256];
     for (int i = 0; i < detect_result_group.count; i++) {
         detect_result_t* det_result = &(detect_result_group.results[i]);
         sprintf(text, "%s %.1f%%", det_result->name, det_result->prop * 100);
-        printf("%s @ (%d %d %d %d) %f\n", det_result->name, det_result->box.left, det_result->box.top,
-            det_result->box.right, det_result->box.bottom, det_result->prop);
+        // printf("%s @ (%d %d %d %d) %f\n", det_result->name, det_result->box.left, det_result->box.top,
+        //     det_result->box.right, det_result->box.bottom, det_result->prop);
         int x1 = det_result->box.left;
         int y1 = det_result->box.top;
         int x2 = det_result->box.right;
         int y2 = det_result->box.bottom;
-        rectangle(orig_img_cv, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(256, 0, 0, 256), 3);
-        putText(orig_img_cv, text, cv::Point(x1, y1 + 12), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255));
+        rectangle(orig_img_cv, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 55, 218), 2);
+        drawTextWithBackground(orig_img_cv, text, cv::Point(x1 - 1, y1 - 6), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), cv::Scalar(0, 55, 218, 0.5), 2);
     }
 
     // imwrite("inference.bmp", orig_img_cv);
 
     // 释放推理结果
     rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
+    return ret;
 }
+void rknn_release(struct _RknnProcess* rknn_process) 
+{
+    if (rknn_process->input_attrs) free(rknn_process->input_attrs);
+    if (rknn_process->output_attrs) free(rknn_process->output_attrs);
+    if (rknn_process->inputs) free(rknn_process->inputs);
+    if (rknn_process->outputs) free(rknn_process->outputs);
+    rknn_process->input_attrs = nullptr;
+    rknn_process->output_attrs = nullptr;
+    rknn_process->inputs = nullptr;
+    rknn_process->outputs = nullptr;
+    rknn_destroy(rknn_process->ctx);
+    if(rknn_process->model_data) {
+        free(rknn_process->model_data);
+    }
 
+}
 #ifdef __cplusplus
 }
 #endif
+
+static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::Point org, int fontFace, double fontScale, cv::Scalar textColor, cv::Scalar bgColor, int thickness)
+{
+    int baseline = 0;
+    cv::Size textSize = cv::getTextSize(text, fontFace, fontScale, thickness, &baseline);
+    baseline += thickness;
+    cv::Rect textBgRect(org.x, org.y - textSize.height, textSize.width, textSize.height + baseline);
+    cv::rectangle(image, textBgRect, bgColor, cv::FILLED);
+    cv::putText(image, text, org, fontFace, fontScale, textColor, thickness);
+}
 static void dump_tensor_attr(rknn_tensor_attr* attr)
 {
     std::string shape_str = attr->n_dims < 1 ? "" : std::to_string(attr->dims[0]);

@@ -68,7 +68,10 @@ gboolean save_rgb_to_bmp(const char* filename, const unsigned char* rgb_data, in
     // BMP file header (14 bytes)
     unsigned char bmp_file_header[14] = {
         'B', 'M',
-        file_size, file_size >> 8, file_size >> 16, file_size >> 24,
+        (unsigned char)(file_size & 0xFF),
+        (unsigned char)((file_size >> 8) & 0xFF),
+        (unsigned char)((file_size >> 16) & 0xFF),
+        (unsigned char)((file_size >> 24) & 0xFF),
         0, 0, 0, 0,
         54, 0, 0, 0
     };
@@ -76,12 +79,21 @@ gboolean save_rgb_to_bmp(const char* filename, const unsigned char* rgb_data, in
     // BMP info header (40 bytes)
     unsigned char bmp_info_header[40] = {
         40, 0, 0, 0,
-        width, width >> 8, width >> 16, width >> 24,
-        height, height >> 8, height >> 16, height >> 24,
+        (unsigned char)(width & 0xFF),
+        (unsigned char)((width >> 8) & 0xFF),
+        (unsigned char)((width >> 16) & 0xFF),
+        (unsigned char)((width >> 24) & 0xFF),
+        (unsigned char)(height & 0xFF),
+        (unsigned char)((height >> 8) & 0xFF),
+        (unsigned char)((height >> 16) & 0xFF),
+        (unsigned char)((height >> 24) & 0xFF),
         1, 0,
         24, 0,
         0, 0, 0, 0,
-        bmp_data_size, bmp_data_size >> 8, bmp_data_size >> 16, bmp_data_size >> 24,
+        (unsigned char)(bmp_data_size & 0xFF),
+        (unsigned char)((bmp_data_size >> 8) & 0xFF),
+        (unsigned char)((bmp_data_size >> 16) & 0xFF),
+        (unsigned char)((bmp_data_size >> 24) & 0xFF),
         0, 0, 0, 0,
         0, 0, 0, 0,
         0, 0, 0, 0,
