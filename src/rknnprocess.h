@@ -40,7 +40,8 @@ int rknn_inference_and_postprocess(
     float box_conf_threshold,
     float nms_threshold,
     int show_fps,      
-    double current_fps      
+    double current_fps,
+    int do_inference   // 新增参数：是否执行推理，0=不推理，1=推理
 );
 void rknn_release(struct _RknnProcess* rknn_process);
 #ifdef __cplusplus

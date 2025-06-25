@@ -97,6 +97,7 @@ enum {
     PROP_MODEL_PATH = 3,
     PROP_LABEL_PATH = 4,
     PROP_SHOW_FPS = 5,
+    PROP_FRAME_SKIP = 6,
 } PROP_ID;
 
 /* the capabilities of the inputs and outputs.
@@ -222,6 +223,10 @@ gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
         g_param_spec_boolean("show-fps", "Show FPS",
             "Display FPS on output frames",
             FALSE, G_PARAM_READWRITE));
+    g_object_class_install_property(gobject_class, PROP_FRAME_SKIP,
+        g_param_spec_int("frame-skip", "Frame Skip",
+            "Number of frames to skip between inferences (0=no skip)",
+            0, G_MAXINT, 0, G_PARAM_READWRITE));
     gst_element_class_set_details_simple(gstelement_class,
         "Rknn Plugin",
         "FIXME: Rknn Plugin classification",
@@ -293,6 +298,11 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     filter->current_fps = 0.0;
     filter->fps_update_interval = 1000000; // 1 second in microseconds
 
+    // 初始化跳帧推理相关变量
+    filter->frame_skip = 0; // 默认不跳帧
+    filter->frame_counter = 0; // 从0开始计数
+    filter->need_inference = TRUE; // 第一帧默认做推理
+
     // for rknn task
     filter->queue = g_async_queue_new();
     GST_LOG_OBJECT(filter, "gst_plugin_rknn_init");
@@ -335,6 +345,11 @@ gst_plugin_rknn_set_property(GObject* object, guint prop_id,
         GST_INFO_OBJECT(filter, "Set show FPS to: %s",
             filter->show_fps ? "TRUE" : "FALSE");
         break;
+    case PROP_FRAME_SKIP:
+        filter->frame_skip = g_value_get_int(value);
+        GST_INFO_OBJECT(filter, "Set frame skip to: %d",
+            filter->frame_skip);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -362,6 +377,9 @@ gst_plugin_rknn_get_property(GObject* object, guint prop_id,
         break;
     case PROP_SHOW_FPS:
         g_value_set_boolean(value, filter->show_fps);
+        break;
+    case PROP_FRAME_SKIP:
+        g_value_set_int(value, filter->frame_skip);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -523,14 +541,14 @@ gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
 static void calculate_fps(GstPluginRknn* filter)
 {
     gint64 current_time = g_get_monotonic_time();
-    
+
     if (filter->fps_start_time == 0) {
         filter->fps_start_time = current_time;
         filter->fps_frame_count = 0;
     }
-    
+
     filter->fps_frame_count++;
-    
+
     gint64 elapsed = current_time - filter->fps_start_time;
     if (elapsed >= filter->fps_update_interval) {
         filter->current_fps = (gdouble)filter->fps_frame_count * 1000000.0 / elapsed;
@@ -648,6 +666,18 @@ static gpointer rknn_task_func(gpointer data)
 
         // start of processing
 
+        // 处理跳帧推理逻辑
+        filter->need_inference = FALSE;
+        if (filter->frame_skip == 0 || filter->frame_counter % (filter->frame_skip + 1) == 0) {
+            filter->need_inference = TRUE;
+        }
+
+        // 更新帧计数器
+        filter->frame_counter++;
+        if (filter->frame_counter > 1000000) { // 避免溢出
+            filter->frame_counter = 0;
+        }
+
         // Normalize to DMABUF memory
         GstMemory* mem_in = gst_buffer_peek_memory(buf, 0);
         GstMemory* mem_in_dmabuf = NULL;
@@ -751,43 +781,45 @@ static gpointer rknn_task_func(gpointer data)
             continue;
         }
 
-        // rga letterboxing
-        rga_buffer_t rga_buf_rknn_input = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_rknn_in), filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_width, filter->rknn_process.model_height, RK_FORMAT_RGB_888);
-        // Define letterboxing rectangles
-        // Calculate scaling ratio to maintain aspect ratio
-        float scale_w = (float)filter->rknn_process.model_width / filter->sink_width;
-        float scale_h = (float)filter->rknn_process.model_height / filter->sink_height;
-        float scale = scale_w < scale_h ? scale_w : scale_h;
-        int new_w = (int)(filter->sink_width * scale + 0.5f);
-        int new_h = (int)(filter->sink_height * scale + 0.5f);
-        int offset_x = (filter->rknn_process.model_width - new_w) / 2;
-        int offset_y = (filter->rknn_process.model_height - new_h) / 2;
-        im_rect rect_rknn_input = { offset_x, offset_y, new_w, new_h };
-        filter->rknn_process.pads.left = offset_x;
-        filter->rknn_process.pads.right = offset_x + new_w;
-        filter->rknn_process.pads.top = offset_y;
-        filter->rknn_process.pads.bottom = offset_y + new_h;
-        filter->rknn_process.scale_w = scale;
-        filter->rknn_process.scale_h = scale;
-        filter->rknn_process.original_width = filter->sink_width;
-        filter->rknn_process.original_height = filter->sink_height;
-        GST_DEBUG_OBJECT(filter, "RGA letterboxing: src_rect=(%d,%d,%d,%d), dst_rect=(%d,%d,%d,%d)",
-            rect_in_dmabuf.x, rect_in_dmabuf.y, rect_in_dmabuf.width, rect_in_dmabuf.height,
-            rect_rknn_input.x, rect_rknn_input.y, rect_rknn_input.width, rect_rknn_input.height);
+        if (filter->need_inference) {
+            // rga letterboxing
+            rga_buffer_t rga_buf_rknn_input = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_rknn_in), filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_width, filter->rknn_process.model_height, RK_FORMAT_RGB_888);
+            // Define letterboxing rectangles
+            // Calculate scaling ratio to maintain aspect ratio
+            float scale_w = (float)filter->rknn_process.model_width / filter->sink_width;
+            float scale_h = (float)filter->rknn_process.model_height / filter->sink_height;
+            float scale = scale_w < scale_h ? scale_w : scale_h;
+            int new_w = (int)(filter->sink_width * scale + 0.5f);
+            int new_h = (int)(filter->sink_height * scale + 0.5f);
+            int offset_x = (filter->rknn_process.model_width - new_w) / 2;
+            int offset_y = (filter->rknn_process.model_height - new_h) / 2;
+            im_rect rect_rknn_input = { offset_x, offset_y, new_w, new_h };
+            filter->rknn_process.pads.left = offset_x;
+            filter->rknn_process.pads.right = offset_x + new_w;
+            filter->rknn_process.pads.top = offset_y;
+            filter->rknn_process.pads.bottom = offset_y + new_h;
+            filter->rknn_process.scale_w = scale;
+            filter->rknn_process.scale_h = scale;
+            filter->rknn_process.original_width = filter->sink_width;
+            filter->rknn_process.original_height = filter->sink_height;
+            GST_DEBUG_OBJECT(filter, "RGA letterboxing: src_rect=(%d,%d,%d,%d), dst_rect=(%d,%d,%d,%d)",
+                rect_in_dmabuf.x, rect_in_dmabuf.y, rect_in_dmabuf.width, rect_in_dmabuf.height,
+                rect_rknn_input.x, rect_rknn_input.y, rect_rknn_input.width, rect_rknn_input.height);
 
-        dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_rknn_in));
-        ret = improcess(rga_buf_in_rgb, rga_buf_rknn_input, // src, dst buffers
-            pat, // pattern buffer unused
-            rect_in_rgb, rect_rknn_input, rect_pat,
-            usage);
-        dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_rknn_in));
-        if (ret != IM_STATUS_SUCCESS) {
-            GST_ERROR_OBJECT(filter, "RGA letterboxing failed: %s", imStrError(ret));
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            continue;
+            dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
+            dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_rknn_in));
+            ret = improcess(rga_buf_in_rgb, rga_buf_rknn_input, // src, dst buffers
+                pat, // pattern buffer unused
+                rect_in_rgb, rect_rknn_input, rect_pat,
+                usage);
+            dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
+            dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_rknn_in));
+            if (ret != IM_STATUS_SUCCESS) {
+                GST_ERROR_OBJECT(filter, "RGA letterboxing failed: %s", imStrError(ret));
+                gst_buffer_unref(buf);
+                gst_buffer_unref(buf);
+                continue;
+            }
         }
         // Save RGB result as BMP (24-bit) for debugging
         // save_rgb_to_bmp("out.bmp", (unsigned char*)(filter->cached_dmabuf_ptr[1]), filter->model_width, filter->model_height);
@@ -797,8 +829,15 @@ static gpointer rknn_task_func(gpointer data)
         filter->rknn_process.inputs[0].buf = filter->cached_dmabuf_ptr[1];
         // Calculate FPS
         calculate_fps(filter);
+
         dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2 + filter->src_buffer_index], 0.6, 0.45, filter->show_fps?1:0,filter->current_fps);
+        if (filter->need_inference) {
+            // 执行推理
+            rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2 + filter->src_buffer_index], 0.6, 0.45, filter->show_fps ? 1 : 0, filter->current_fps, 1);
+        } else {
+            // 不推理时，直接将上一帧的结果绘制到当前帧
+            rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2 + filter->src_buffer_index], 0.6, 0.45, filter->show_fps ? 1 : 0, filter->current_fps, 0);
+        }
         dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
         // check refcount of out gst memory
 

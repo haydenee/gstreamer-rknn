@@ -58,7 +58,7 @@
 #include "rga.h"
 #include "rknn_api.h"
 #include "rknnprocess.h"
-#define MAX_QUEUE_LENGTH 3
+#define MAX_QUEUE_LENGTH 4
 #define MAX_DMABUF_INSTANCES 5
 #define ALIGN_UP(x, align) (((x) + ((align)-1)) & ~((align)-1))
 
@@ -136,7 +136,10 @@ struct _GstPluginRknn {
     gdouble current_fps;
     gint64 fps_update_interval; // in microseconds
     
-
+    /* 帧间隔推理相关变量 */
+    gint frame_skip;         // 推理间隔帧数，0表示不跳帧
+    gint frame_counter;      // 当前帧计数器
+    gboolean need_inference; // 当前帧是否需要推理
 };
 
 G_END_DECLS

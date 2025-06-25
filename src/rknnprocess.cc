@@ -115,17 +115,22 @@ int rknn_inference_and_postprocess(
     float box_conf_threshold,
     float nms_threshold,
     int show_fps,      
-    double current_fps      
+    double current_fps,
+    int do_inference
 )
 {
-    int ret;
+    int ret = 0;
 
     cv::Mat orig_img_cv(rknn_process->original_height, rknn_process->original_width, CV_8UC3, orig_img);
 
-    rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input, rknn_process->inputs);
-    // 执行推理
-    ret = rknn_run(rknn_process->ctx, NULL);
-    ret = rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs, NULL);
+    if (do_inference) { 
+        rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
+
+        rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input, rknn_process->inputs);
+        // 执行推理
+        ret = rknn_run(rknn_process->ctx, NULL);
+        ret = rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs, NULL);
+    }
 
     // 后处理
     detect_result_group_t detect_result_group;
@@ -172,7 +177,7 @@ int rknn_inference_and_postprocess(
     // imwrite("inference.bmp", orig_img_cv);
 
     // 释放推理结果
-    rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
+    
     return ret;
 }
 void rknn_release(struct _RknnProcess* rknn_process) 
