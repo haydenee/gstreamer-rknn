@@ -28,6 +28,12 @@ services:
       - ./history:/home/${USER_NAME:-developer}/.bash_history
       # 构建缓存
       - ./build-cache:/workspace/build
+      # VSCode Server持久化（避免镜像更新时丢失）
+      - ./vscode-server:/home/${USER_NAME:-developer}/.vscode-server
+      - ./vscode-server-insiders:/home/${USER_NAME:-developer}/.vscode-server-insiders
+      # 根用户VSCode Server持久化
+      - ./root-vscode-server:/root/.vscode-server
+      - ./root-vscode-server-insiders:/root/.vscode-server-insiders
     working_dir: /workspace
     stdin_open: true
     tty: true
