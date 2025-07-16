@@ -1,0 +1,32 @@
+services:
+  gstreamer-rknn-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - USER_ID=${USER_ID:-1000}
+        - GROUP_ID=${GROUP_ID:-1000}
+        - USER_NAME=${USER_NAME:-developer}
+    container_name: gstreamer-rknn-dev
+    hostname: gstreamer-rknn-dev
+    privileged: true
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - USER=${USER_NAME:-developer}
+      - USER_ID=${USER_ID:-1000}
+      - GROUP_ID=${GROUP_ID:-1000}
+    volumes:
+      # 项目源代码挂载
+      - ..:/workspace
+      # X11 socket for GUI applications
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # GPU设备挂载
+      - /dev/dri:/dev/dri
+      # 缓存和配置目录
+      - ./cache:/home/${USER_NAME:-developer}/.cache
+      - ./history:/home/${USER_NAME:-developer}/.bash_history
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash"]
