@@ -1,22 +1,37 @@
-# RK3588交叉编译Docker镜像
 FROM ubuntu:22.04
 
-# 避免交互式配置
+# 设置环境变量
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Shanghai
 ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
+ENV TZ=Asia/Shanghai
 
-# 创建非root用户（与宿主机用户ID匹配）
+# 设置交叉编译目标架构
+ENV TARGET_ARCH=aarch64-linux-gnu
+ENV SYSROOT=/usr/${TARGET_ARCH}
+
+# 接收构建参数（用于创建非root用户）
 ARG USER_ID=1000
 ARG GROUP_ID=1000
 ARG USER_NAME=developer
 
-# 设置apt缓存以加速重建
+# 配置多架构支持
+RUN rm -f /etc/apt/sources.list && \
+    echo "# AMD64架构源" >> /etc/apt/sources.list && \
+    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "" >> /etc/apt/sources.list && \
+    echo "# ARM64架构源" >> /etc/apt/sources.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-backports main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
+
+# 步骤1: 安装基础系统工具
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
-    # 基础工具
     sudo \
     curl \
     wget \
@@ -28,72 +43,87 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     unzip \
     zip \
     rsync \
-    openssh-client \
-    # 交叉编译工具链
+    openssh-client
+
+# 步骤2: 安装交叉编译工具链
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
     binutils-aarch64-linux-gnu \
-    # 构建工具
     build-essential \
     cmake \
     pkg-config \
     autoconf \
     automake \
     libtool \
+    gdb-multiarch \
+    file \
+    libc6-dev-arm64-cross \
+    libstdc++6-arm64-cross \
+    libgcc-s1-arm64-cross
+
+# 步骤3: 安装构建工具
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     meson \
     ninja-build \
-    # Python开发
     python3 \
     python3-pip \
     python3-dev \
-    python3-setuptools \
-    # GStreamer交叉编译依赖（开发头文件）
-    libgstreamer1.0-dev \
-    libgstreamer-plugins-base1.0-dev \
-    libgstreamer-plugins-bad1.0-dev \
-    # 交叉编译支持
-    libc6-dev-arm64-cross \
-    libstdc++6-arm64-cross \
-    libgcc-s1-arm64-cross \
-    # 开发调试工具
-    gdb-multiarch \
-    file \
-    # 清理apt缓存（由Docker自动处理）
-    && true
+    python3-setuptools
+
+# 步骤4: 安装ARM64架构的开发包（用于交叉编译头文件和库）
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    dpkg --add-architecture arm64 && \
+    apt-get update && apt-get install -y \
+    libgstreamer1.0-dev:arm64 \
+    libgstreamer-plugins-base1.0-dev:arm64 \
+    libgstreamer-plugins-bad1.0-dev:arm64 \
+    libglib2.0-dev:arm64 \
+    libcairo2-dev:arm64 \
+    libopencv-dev:arm64 \
+    libgstreamer-plugins-good1.0-dev:arm64 \
+    gstreamer1.0-plugins-base:arm64 \
+    gstreamer1.0-plugins-good:arm64 \
+    gstreamer1.0-plugins-bad:arm64 \
+    libglib2.0-dev-bin:arm64
+
+# 步骤6: 创建ARM64库目录结构
+RUN mkdir -p /opt/arm64-libs/usr/lib/aarch64-linux-gnu && \
+    mkdir -p /opt/arm64-libs/usr/include
+
+# 安装meson交叉编译配置文件
+COPY docker/meson-cross-aarch64.txt /opt/meson-cross-aarch64.txt
+
 
 # 创建非root用户
 RUN groupadd -g ${GROUP_ID} ${USER_NAME} && \
     useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash ${USER_NAME} && \
     echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# 设置交叉编译环境变量
-ENV CROSS_COMPILE=aarch64-linux-gnu-
-ENV CC=aarch64-linux-gnu-gcc
-ENV CXX=aarch64-linux-gnu-g++
-ENV AR=aarch64-linux-gnu-ar
-ENV STRIP=aarch64-linux-gnu-strip
-ENV PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu
-ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
-
-# 创建交叉编译工作目录
+# 设置工作目录
 WORKDIR /workspace
 
-# 复制RK3588专用库和头文件到系统目录
-COPY --chown=${USER_ID}:${GROUP_ID} thirdparty/ /opt/rk3588-libs/
+# 创建必要的目录
+RUN mkdir -p /workspace/build /workspace/install /workspace/thirdparty
 
-# 设置RK3588库路径
-RUN ln -sf /opt/rk3588-libs/libs/librga.so /usr/lib/aarch64-linux-gnu/librga.so && \
-    ln -sf /opt/rk3588-libs/libs/librknnrt.so /usr/lib/aarch64-linux-gnu/librknnrt.so && \
-    mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig && \
-    cp /opt/rk3588-libs/pkgconfig/*.pc /usr/lib/aarch64-linux-gnu/pkgconfig/ 2>/dev/null || true
+# 复制第三方库
+COPY thirdparty/ /workspace/thirdparty/
 
 # 设置环境变量
-ENV PATH="/home/${USER_NAME}/.local/bin:$PATH"
-ENV PYTHONPATH="/workspace:$PYTHONPATH"
-ENV LD_LIBRARY_PATH="/opt/rk3588-libs/libs:$LD_LIBRARY_PATH"
+ENV PATH="/workspace/install/bin:$PATH"
+ENV LD_LIBRARY_PATH="/workspace/install/lib:/workspace/thirdparty/lib:$LD_LIBRARY_PATH"
+ENV LIBRARY_PATH="/workspace/install/lib:/workspace/thirdparty/lib:$LIBRARY_PATH"
+ENV PKG_CONFIG_PATH=/usr/lib/${TARGET_ARCH}/pkgconfig:/usr/share/pkgconfig
+ENV PKG_CONFIG_SYSROOT_DIR=/
+ENV ARM64_LIB_PATH=/opt/arm64-libs/usr/lib/aarch64-linux-gnu
 
 # 切换到非root用户
 USER ${USER_NAME}
 
-# 默认启动命令
+# 默认命令
 CMD ["/bin/bash"]

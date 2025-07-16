@@ -3,52 +3,21 @@ c = 'aarch64-linux-gnu-gcc'
 cpp = 'aarch64-linux-gnu-g++'
 ar = 'aarch64-linux-gnu-ar'
 strip = 'aarch64-linux-gnu-strip'
-pkgconfig = 'aarch64-linux-gnu-pkg-config'
+pkgconfig = 'pkg-config'
 ld = 'aarch64-linux-gnu-ld'
-exe_wrapper = ['qemu-aarch64-static', '-L', '/usr/aarch64-linux-gnu']
 
 [properties]
-needs_exe_wrapper = true
 sys_root = '/usr/aarch64-linux-gnu'
+pkg_config_path = ['/usr/aarch64-linux-gnu/usr/lib/pkgconfig', '/usr/aarch64-linux-gnu/usr/share/pkgconfig']
 
-# 设置pkg-config路径
-pkg_config_libdir = [
-    '/usr/lib/aarch64-linux-gnu/pkgconfig',
-    '/usr/share/pkgconfig',
-    '/opt/rk3588-libs/pkgconfig'
-]
-
-# 编译器标志
-c_args = [
-    '--sysroot=/usr/aarch64-linux-gnu',
-    '-I/usr/aarch64-linux-gnu/include',
-    '-I/opt/rk3588-libs/include'
-]
-
-c_link_args = [
-    '--sysroot=/usr/aarch64-linux-gnu',
-    '-L/usr/aarch64-linux-gnu/lib',
-    '-L/opt/rk3588-libs/lib',
-    '-Wl,-rpath,/opt/rk3588-libs/lib'
-]
-
-cpp_args = [
-    '--sysroot=/usr/aarch64-linux-gnu',
-    '-I/usr/aarch64-linux-gnu/include',
-    '-I/opt/rk3588-libs/include'
-]
-
-cpp_link_args = [
-    '--sysroot=/usr/aarch64-linux-gnu',
-    '-L/usr/aarch64-linux-gnu/lib',
-    '-L/opt/rk3588-libs/lib',
-    '-Wl,-rpath,/opt/rk3588-libs/lib'
-]
+[built-in options]
+c_args = ['-I/usr/include/glib-2.0', '-I/usr/lib/aarch64-linux-gnu/glib-2.0/include', '-I/usr/include/gstreamer-1.0', '-I/usr/include/gstreamer-1.0/gst', '-I/usr/include/gstreamer-1.0/gst/video', '-I/usr/include/opencv4']
+cpp_args = ['-I/usr/include/glib-2.0', '-I/usr/lib/aarch64-linux-gnu/glib-2.0/include', '-I/usr/include/gstreamer-1.0', '-I/usr/include/gstreamer-1.0/gst', '-I/usr/include/gstreamer-1.0/gst/video', '-I/usr/include/opencv4']
 
 [host_machine]
 system = 'linux'
-cpu_family = 'aarch64'
-cpu = 'arm64'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
 endian = 'little'
 
 [target_machine]
