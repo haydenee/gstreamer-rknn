@@ -1,14 +1,14 @@
 services:
-  gstreamer-rknn-dev:
+  gstreamer-rknn-cross:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         - USER_ID=${USER_ID:-1000}
         - GROUP_ID=${GROUP_ID:-1000}
         - USER_NAME=${USER_NAME:-developer}
-    container_name: gstreamer-rknn-dev
-    hostname: gstreamer-rknn-dev
+    container_name: gstreamer-rknn-cross
+    hostname: gstreamer-rknn-cross
     privileged: true
     network_mode: host
     environment:
@@ -16,19 +16,21 @@ services:
       - USER=${USER_NAME:-developer}
       - USER_ID=${USER_ID:-1000}
       - GROUP_ID=${GROUP_ID:-1000}
+      - TARGET_DEVICE=${TARGET_DEVICE:-opi-003}
+      - SSH_USER=${SSH_USER:-root}
     volumes:
       # 项目源代码挂载
       - ..:/workspace
-      # X11 socket for GUI applications
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # GPU设备挂载
-      - /dev/dri:/dev/dri
+      # SSH密钥和配置
+      - ~/.ssh:/home/${USER_NAME:-developer}/.ssh:ro
       # 缓存和配置目录
       - ./cache:/home/${USER_NAME:-developer}/.cache
       - ./history:/home/${USER_NAME:-developer}/.bash_history
+      # 构建缓存
+      - ./build-cache:/workspace/build
     working_dir: /workspace
     stdin_open: true
     tty: true
     command: ["/bin/bash"]
-    extra_hosts:
-      - "gstreamer-rknn-dev:127.0.0.1"
+    # extra_hosts:  # 注释掉，使用mDNS或环境变量配置
+    #   - "opi-003:192.168.1.100"

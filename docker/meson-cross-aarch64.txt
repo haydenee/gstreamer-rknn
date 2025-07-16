@@ -1,0 +1,58 @@
+[binaries]
+c = 'aarch64-linux-gnu-gcc'
+cpp = 'aarch64-linux-gnu-g++'
+ar = 'aarch64-linux-gnu-ar'
+strip = 'aarch64-linux-gnu-strip'
+pkgconfig = 'aarch64-linux-gnu-pkg-config'
+ld = 'aarch64-linux-gnu-ld'
+exe_wrapper = ['qemu-aarch64-static', '-L', '/usr/aarch64-linux-gnu']
+
+[properties]
+needs_exe_wrapper = true
+sys_root = '/usr/aarch64-linux-gnu'
+
+# 设置pkg-config路径
+pkg_config_libdir = [
+    '/usr/lib/aarch64-linux-gnu/pkgconfig',
+    '/usr/share/pkgconfig',
+    '/opt/rk3588-libs/pkgconfig'
+]
+
+# 编译器标志
+c_args = [
+    '--sysroot=/usr/aarch64-linux-gnu',
+    '-I/usr/aarch64-linux-gnu/include',
+    '-I/opt/rk3588-libs/include'
+]
+
+c_link_args = [
+    '--sysroot=/usr/aarch64-linux-gnu',
+    '-L/usr/aarch64-linux-gnu/lib',
+    '-L/opt/rk3588-libs/lib',
+    '-Wl,-rpath,/opt/rk3588-libs/lib'
+]
+
+cpp_args = [
+    '--sysroot=/usr/aarch64-linux-gnu',
+    '-I/usr/aarch64-linux-gnu/include',
+    '-I/opt/rk3588-libs/include'
+]
+
+cpp_link_args = [
+    '--sysroot=/usr/aarch64-linux-gnu',
+    '-L/usr/aarch64-linux-gnu/lib',
+    '-L/opt/rk3588-libs/lib',
+    '-Wl,-rpath,/opt/rk3588-libs/lib'
+]
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'arm64'
+endian = 'little'
+
+[target_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'arm64'
+endian = 'little'

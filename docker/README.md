@@ -1,189 +1,217 @@
-# GStreamer-RKNN Docker开发环境
+# RK3588交叉编译Docker环境
 
-## 概述
+## 🎯 概述
 
-本项目提供了基于Docker的GStreamer-RKNN开发环境，使用Ubuntu 22.04 LTS作为基础镜像，预装了完整的GStreamer开发工具链和RKNN相关依赖。
+本项目提供专为RK3588设计的交叉编译Docker环境，使用Ubuntu 22.04作为基础镜像，预装aarch64-linux-gnu交叉编译工具链和RK3588专用库。
 
-## 环境要求
+## 🔧 环境要求
 
 - Docker Engine 20.10+
-- Docker Compose（或Docker内置的compose命令）
-- Linux系统（推荐Ubuntu 20.04+或类似系统）
+- Docker Compose
+- Linux系统（推荐Ubuntu 20.04+）
+- SSH访问RK3588设备（通过mDNS自动发现）
 
-## 快速开始
+## 🚀 快速开始
 
-### 1. 启动开发环境
+### 1. 启动交叉编译环境
 
 ```bash
 cd docker
+chmod +x start.sh build.sh
 ./start.sh
 ```
 
-脚本会自动：
-- 检查Docker环境
-- 创建`.env`配置文件（基于`.env.example`）
-- 构建Docker镜像
-- 启动容器
-
-### 2. 进入容器
-
-容器启动后，使用以下命令进入：
+### 2. 进入交叉编译容器
 
 ```bash
-# 方法1：使用docker命令
-docker exec -it gstreamer-rknn-dev bash
-
-# 方法2：使用docker compose
-docker compose exec gstreamer-rknn-dev bash
+docker compose exec gstreamer-rknn-cross bash
 ```
 
-### 3. 验证环境
-
-进入容器后，可以验证开发环境：
+### 3. 执行交叉编译
 
 ```bash
-# 检查GStreamer版本
-gst-launch-1.0 --version
+# 仅编译
+./docker/build.sh build
 
-# 检查RKNN库
-ls -la /usr/lib/librknnrt.so
+# 编译并部署到RK3588
+./docker/build.sh all
 
-# 检查RGA库
-ls -la /usr/lib/librga.so
-
-# 测试编译环境
-gcc --version
-cmake --version
+# 仅部署
+./docker/build.sh deploy
 ```
 
-## 目录结构
+## 📁 目录结构
 
 ```
 docker/
-├── Dockerfile          # Ubuntu 22.04基础镜像定义
-├── docker-compose.yml  # Docker Compose配置
-├── start.sh           # 一键启动脚本
-├── .env.example       # 环境变量模板
-├── .env               # 自动生成的环境变量文件（不被git跟踪）
-├── cache/             # 容器缓存目录（不被git跟踪）
-└── history/           # bash历史记录目录（不被git跟踪）
+├── Dockerfile                 # RK3588交叉编译专用镜像
+├── docker-compose.yml        # Docker Compose配置
+├── start.sh                 # 一键启动脚本
+├── build.sh                 # 交叉编译+部署脚本
+├── meson-cross-aarch64.txt  # Meson交叉编译配置
+├── .env.example             # 环境变量模板
+├── .env                     # 自动生成的环境变量文件
+├── cache/                   # 构建缓存目录
+└── history/                 # bash历史记录目录
 ```
 
-## 环境变量配置
+## 🛠️ 技术规格
 
-`.env`文件包含以下可配置项：
+### 交叉编译工具链
+- **目标架构**: aarch64-linux-gnu
+- **GCC版本**: 11.x
+- **工具链**: Ubuntu官方aarch64-linux-gnu
+- **构建系统**: Meson + Ninja
 
-- `USER_ID`: 宿主机用户ID（默认自动获取）
-- `GROUP_ID`: 宿主机用户组ID（默认自动获取）
-- `USER_NAME`: 容器内用户名（默认使用当前用户名）
-
-## 功能特性
-
-### ✅ 已安装的开发工具
-- **编译工具**: build-essential, cmake, make, gcc, g++
-- **版本控制**: git
-- **编辑器**: vim, nano
-- **网络工具**: curl, wget, net-tools
-- **调试工具**: gdb, valgrind
-
-### ✅ GStreamer完整开发环境
-- **核心库**: libgstreamer1.0-dev, libgstreamer-plugins-base1.0-dev
-- **插件**: good, bad, ugly, libav, x, rtp, rtsp等完整插件包
-- **工具**: gstreamer1.0-tools, gstreamer1.0-doc
-- **测试工具**: gst-launch-1.0, gst-inspect-1.0
-
-### ✅ RKNN相关依赖
+### RK3588专用组件
+- **RGA库**: librga.so (Rockchip Graphics Acceleration)
 - **RKNN Runtime**: librknnrt.so
-- **RGA库**: librga.so（Rockchip图形加速）
-- **头文件**: rknn_api.h, rga相关头文件
+- **GStreamer**: 1.20+ (aarch64版本)
 
-### ✅ 卷挂载配置
-- **项目代码**: 自动挂载到`/workspace`
-- **X11转发**: 支持GUI应用显示
-- **GPU设备**: 支持/dev/dri设备访问
-- **缓存目录**: 持久化用户缓存和bash历史
+## 📋 使用方法
 
-## 使用技巧
-
-### 1. 构建项目
-
-进入容器后：
+### 基础操作
 
 ```bash
+# 启动环境
+./start.sh
+
+# 进入容器
+docker compose exec gstreamer-rknn-cross bash
+
+# 在容器内执行
 cd /workspace
-meson setup build
-ninja -C build
+
+# 配置构建
+meson setup build-aarch64 --cross-file docker/meson-cross-aarch64.txt
+
+# 编译
+ninja -C build-aarch64
+
+# 安装到容器
+ninja -C build-aarch64 install
 ```
 
-### 2. 运行测试
+### 一键操作
 
 ```bash
-# 运行文件测试
-./script/file_test.sh
+# 完整流程：清理+构建+部署
+./docker/build.sh all
 
-# 运行流测试
-./script/stream_test.sh
+# 仅构建
+./docker/build.sh build
 
-# 运行UDP测试
-./script/udp_test.sh
+# 仅部署到设备
+./docker/build.sh deploy
+
+# 清理构建
+./docker/build.sh clean
 ```
 
-### 3. 开发调试
+## 🔧 配置说明
 
-- 使用`gdb`调试C/C++程序
-- 使用`gst-launch-1.0 -v`查看详细管道信息
-- 使用`gst-inspect-1.0`查看插件信息
-
-### 4. 容器管理
+### 环境变量 (.env文件)
 
 ```bash
-# 停止容器
-docker compose down
+# 用户配置
+USER_ID=$(id -u)
+GROUP_ID=$(id -g)
+USER_NAME=$(whoami)
 
-# 重启容器
-docker compose restart
-
-# 查看日志
-docker compose logs -f
-
-# 清理所有容器和数据
-docker compose down -v
+# 目标设备（通过mDNS自动发现）
+TARGET_DEVICE=opi-003.local
+SSH_USER=root
 ```
 
-## 故障排除
+### 目标设备配置
 
-### 问题1: GUI应用无法显示
+目标RK3588设备通过mDNS自动发现，默认地址为`opi-003.local`。确保：
+1. 设备已启用SSH服务
+2. 主机和目标设备在同一网络
+3. mDNS正常工作（可以ping opi-003.local）
+
+## 🐛 故障排除
+
+### 1. mDNS解析失败
 ```bash
-# 在宿主机执行
-xhost +local:docker
-export DISPLAY=:0
+# 测试mDNS解析
+ping opi-003.local
+
+# 如果失败，检查：
+# - 设备是否已启动
+# - 网络连接是否正常
+# - 使用IP地址替代
 ```
 
-### 问题2: 权限问题
-确保`.env`文件中的`USER_ID`和`GROUP_ID`与宿主机一致：
+### 2. SSH连接失败
 ```bash
-id -u  # 查看用户ID
-id -g  # 查看组ID
+# 测试SSH连接
+ssh root@opi-003.local
+
+# 如果需要密码，设置SSH密钥
+ssh-copy-id root@opi-003.local
 ```
 
-### 问题3: Docker构建失败
+### 3. 交叉编译错误
+```bash
+# 检查交叉编译器
+aarch64-linux-gnu-gcc --version
+
+# 检查库文件
+pkg-config --cflags --libs gstreamer-1.0
+```
+
+### 4. 构建缓存问题
 ```bash
 # 清理并重新构建
-docker compose down
-docker compose build --no-cache
-docker compose up -d
+./docker/build.sh clean
+./docker/build.sh build
 ```
 
-## 注意事项
+## 📊 验证测试
 
-1. **权限映射**: 容器内用户ID会自动匹配宿主机，避免文件权限问题
-2. **代码同步**: 项目目录实时同步，宿主机修改立即生效
-3. **缓存持久化**: `.cache`和`.bash_history`会持久化到本地目录
-4. **网络模式**: 使用host网络模式，方便调试网络相关功能
+### 验证交叉编译结果
 
-## 更新日志
+```bash
+# 在容器中检查架构
+file build-aarch64/src/libgstrknn.so
+# 输出应包含: ELF 64-bit LSB shared object, ARM aarch64
 
-- v1.0.0: 初始版本，基于Ubuntu 22.04 LTS
-- 包含完整的GStreamer 1.20+开发环境
-- 集成RKNN Runtime和RGA库
-- 支持GUI应用和GPU加速
+# 验证依赖
+ldd build-aarch64/src/libgstrknn.so
+```
+
+### 目标设备测试
+
+```bash
+# 在RK3588设备上测试
+gst-inspect-1.0 /usr/local/lib/gstreamer-1.0/libgstrknn.so
+```
+
+## 🔍 开发调试
+
+### 调试工具
+- **gdb-multiarch**: 多架构调试器
+- **strace**: 系统调用跟踪
+- **file**: 文件类型检测
+
+### 性能优化
+- 使用`-j$(nproc)`并行编译
+- 启用Docker构建缓存
+- 使用ccache加速重复编译
+
+## 📝 注意事项
+
+1. **架构限制**: 仅支持aarch64架构，不生成x86_64版本
+2. **库文件**: 使用项目自带的thirdparty RK3588库
+3. **部署**: 自动部署到`/usr/local/lib/gstreamer-1.0/`
+4. **缓存**: 构建缓存保留在`./build-cache/`目录
+5. **网络**: 确保mDNS正常工作以发现目标设备
+
+## 🔄 更新日志
+
+- v2.0.0: 完全重构为交叉编译环境
+- 支持纯aarch64交叉编译
+- 集成RK3588专用库
+- 自动mDNS设备发现
+- 一键构建部署流程

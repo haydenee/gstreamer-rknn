@@ -1,67 +1,123 @@
 #!/bin/bash
-# GStreamer-RKNN Docker开发环境启动脚本
-
 set -e
 
+# RK3588交叉编译环境启动脚本
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # 颜色输出
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== GStreamer-RKNN Docker开发环境启动脚本 ===${NC}"
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
 
-# 检查Docker是否安装
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}错误: Docker未安装${NC}"
-    exit 1
-fi
+warn() {
+    echo -e "${YELLOW}[WARN] $1${NC}"
+}
 
-if ! docker compose version &> /dev/null; then
-    echo -e "${RED}错误: Docker Compose未安装${NC}"
-    exit 1
-fi
+# 检查Docker环境
+check_docker() {
+    if ! command -v docker &> /dev/null; then
+        echo "错误: Docker未安装！请先安装Docker。"
+        exit 1
+    fi
+    
+    if ! docker info &> /dev/null; then
+        echo "错误: Docker守护进程未运行！请启动Docker服务。"
+        exit 1
+    fi
+}
 
-# 获取当前用户信息
+# 创建.env文件（如果不存在）
+setup_env() {
+    if [ ! -f "$SCRIPT_DIR/.env" ]; then
+        log "创建环境变量文件..."
+        cat > "$SCRIPT_DIR/.env" << EOF
+# 用户配置
 USER_ID=$(id -u)
 GROUP_ID=$(id -g)
 USER_NAME=$(whoami)
 
-# 创建.env文件（如果不存在）
-if [ ! -f .env ]; then
-    echo -e "${YELLOW}创建.env配置文件...${NC}"
-    cp .env.example .env
+# 目标设备配置（通过mDNS自动发现）
+TARGET_DEVICE=opi-003.local
+SSH_USER=root
+
+# 显示配置
+DISPLAY=$DISPLAY
+EOF
+        log ".env文件已创建 ✓"
+    fi
+}
+
+# 清理旧的交叉编译容器
+cleanup_containers() {
+    log "清理旧的容器..."
+    docker compose -f "$SCRIPT_DIR/docker-compose.yml" down --remove-orphans || true
+}
+
+# 构建镜像
+build_image() {
+    log "构建RK3588交叉编译镜像..."
+    docker compose -f "$SCRIPT_DIR/docker-compose.yml" build --no-cache
+    log "镜像构建完成 ✓"
+}
+
+# 显示使用说明
+show_usage() {
+    echo ""
+    echo "🎯 RK3588交叉编译环境已就绪！"
+    echo ""
+    echo "使用方法："
+    echo "  1. 进入容器："
+    echo "     docker compose exec gstreamer-rknn-cross bash"
+    echo ""
+    echo "  2. 交叉编译："
+    echo "     ./docker/build.sh build"
+    echo ""
+    echo "  3. 一键构建+部署："
+    echo "     ./docker/build.sh all"
+    echo ""
+    echo "  4. 仅部署："
+    echo "     ./docker/build.sh deploy"
+    echo ""
+    echo "  5. 清理构建："
+    echo "     ./docker/build.sh clean"
+    echo ""
+    echo "环境变量可在 .env 文件中配置"
+    echo ""
+    echo "目标设备：$TARGET_DEVICE (通过mDNS自动发现)"
+}
+
+# 主函数
+main() {
+    log "🚀 启动RK3588交叉编译环境..."
     
-    # 更新用户配置
-    sed -i "s/USER_ID=1000/USER_ID=$USER_ID/g" .env
-    sed -i "s/GROUP_ID=1000/GROUP_ID=$GROUP_ID/g" .env
-    sed -i "s/USER_NAME=developer/USER_NAME=$USER_NAME/g" .env
+    check_docker
+    setup_env
     
-    echo -e "${GREEN}.env文件已创建，可根据需要编辑${NC}"
+    # 切换到docker目录
+    cd "$SCRIPT_DIR"
+    
+    cleanup_containers
+    
+    if [ "$1" == "--build" ]; then
+        build_image
+    fi
+    
+    log "启动交叉编译容器..."
+    docker compose up -d
+    
+    # 等待容器启动
+    sleep 2
+    
+    show_usage
+}
+
+# 如果直接运行脚本
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
 fi
-
-# 创建必要的目录
-mkdir -p cache
-mkdir -p history
-
-# 检查X11转发
-if [ -z "$DISPLAY" ]; then
-    echo -e "${YELLOW}警告: DISPLAY环境变量未设置，GUI应用可能无法运行${NC}"
-    echo -e "请使用: export DISPLAY=:0 或类似的值"
-fi
-
-# 启动容器
-echo -e "${GREEN}正在构建Docker镜像...${NC}"
-docker compose build
-
-echo -e "${GREEN}正在启动容器...${NC}"
-docker compose up -d
-
-echo -e "${GREEN}容器启动成功！${NC}"
-echo -e "使用以下命令进入容器："
-echo -e "  ${YELLOW}docker exec -it gstreamer-rknn-dev bash${NC}"
-echo -e "或者使用："
-echo -e "  ${YELLOW}docker compose exec gstreamer-rknn-dev bash${NC}"
-
-# 显示容器状态
-docker compose ps
