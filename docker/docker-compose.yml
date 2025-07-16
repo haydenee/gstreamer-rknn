@@ -31,5 +31,5 @@ services:
     stdin_open: true
     tty: true
     command: ["/bin/bash"]
-    # extra_hosts:  # 注释掉，使用mDNS或环境变量配置
-    #   - "opi-003:192.168.1.100"
+    extra_hosts:
+      - "gstreamer-rknn-cross:127.0.0.1"
