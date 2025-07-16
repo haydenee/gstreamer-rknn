@@ -23,12 +23,9 @@ services:
       - ..:/workspace
       # SSH密钥和配置
       - ~/.ssh:/home/${USER_NAME:-developer}/.ssh:ro
-      # 缓存和配置目录
-      - ./cache:/home/${USER_NAME:-developer}/.cache
-      - ./history:/home/${USER_NAME:-developer}/.bash_history
       # 构建缓存
       - ./build-cache:/workspace/build
-      # VSCode Server持久化（避免镜像更新时丢失）
+      # 根用户配置持久化（包含VSCode Server、缓存、历史记录等）
       - ./.root:/root
     working_dir: /workspace
     stdin_open: true
