@@ -30,3 +30,5 @@ services:
     stdin_open: true
     tty: true
     command: ["/bin/bash"]
+    extra_hosts:
+      - "gstreamer-rknn-dev:127.0.0.1"
