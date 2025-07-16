@@ -63,5 +63,5 @@ Build
 
 # Docker files
 docker/.env
-docker/cache/
-docker/history/
+docker/.root/
+docker/build-cache/
