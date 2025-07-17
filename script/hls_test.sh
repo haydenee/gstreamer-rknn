@@ -1,0 +1,15 @@
+export GST_DEBUG=*:3
+# export GST_DEBUG=*:3,rknn:7,mpp:7,mppenc:7,mpph264enc:7,GST_TRACER:7
+export GST_MPP_NO_RGA=0
+export GST_TRACERS="leaks"
+
+gst-launch-1.0 -v \
+  v4l2src device=/dev/video0 io-mode=mmap do-timestamp=true \
+  ! video/x-raw,format=NV16 \
+  ! rknn silent=true bypass=false show-fps=true frame-skip=2 \
+        model-path=/root/model/yolov5s-640-640.rknn \
+        label-path=/root/model/coco_80_labels_list.txt \
+  ! mpph264enc rc-mode=cbr bps=10000000 gop=30 \
+  ! h264parse config-interval=-1 \
+  ! hlssink2 location=/tmp/hls/segment-%05d.ts \
+              playlist-location=/tmp/hls/stream.m3u8

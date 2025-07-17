@@ -58,6 +58,8 @@ Build
 *.log
 *.trs
 
+*.mp4
+
 /build
 /subprojects
 
