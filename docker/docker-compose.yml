@@ -21,8 +21,8 @@ services:
     volumes:
       # 项目源代码挂载
       - ..:/workspace
-      # SSH密钥和配置
-      - ~/.ssh:/home/${USER_NAME:-developer}/.ssh:ro
+      # SSH密钥和配置（使用宿主机的$HOME/.ssh）
+      - ${HOME}/.ssh:/home/${USER_NAME:-developer}/.ssh
       # 用户配置持久化（包含VSCode Server、缓存、历史记录等）
       - ./.root:/root
       - ./.home:/home
