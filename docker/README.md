@@ -48,11 +48,12 @@ docker/
 ├── docker-compose.yml        # Docker Compose配置
 ├── start.sh                 # 一键启动脚本
 ├── build.sh                 # 交叉编译+部署脚本
+├── test_workflow.sh         # 端到端工作流测试脚本
 ├── meson-cross-aarch64.txt  # Meson交叉编译配置
 ├── .env.example             # 环境变量模板
 ├── .env                     # 自动生成的环境变量文件
-├── cache/                   # 构建缓存目录
-└── history/                 # bash历史记录目录
+├── .root/                   # 容器root用户主目录（持久化）
+└── .home/                   # 容器当前用户主目录（持久化）
 ```
 
 ## 🛠️ 技术规格
@@ -140,6 +141,7 @@ ping opi-003.local
 # 如果失败，检查：
 # - 设备是否已启动
 # - 网络连接是否正常
+# - 容器内mDNS支持（已预装avahi-utils）
 # - 使用IP地址替代
 ```
 
@@ -181,10 +183,15 @@ file build-aarch64/src/libgstrknn.so
 ldd build-aarch64/src/libgstrknn.so
 ```
 
-### 目标设备测试
+### 端到端工作流测试
+
+使用提供的测试脚本验证从交叉编译到部署的完整流程：
 
 ```bash
-# 在RK3588设备上测试
+# 运行端到端测试
+./docker/test_workflow.sh
+
+# 手动测试插件
 gst-inspect-1.0 /usr/local/lib/gstreamer-1.0/libgstrknn.so
 ```
 
@@ -207,11 +214,3 @@ gst-inspect-1.0 /usr/local/lib/gstreamer-1.0/libgstrknn.so
 3. **部署**: 自动部署到`/usr/local/lib/gstreamer-1.0/`
 4. **缓存**: 构建缓存保留在`./build-cache/`目录
 5. **网络**: 确保mDNS正常工作以发现目标设备
-
-## 🔄 更新日志
-
-- v2.0.0: 完全重构为交叉编译环境
-- 支持纯aarch64交叉编译
-- 集成RK3588专用库
-- 自动mDNS设备发现
-- 一键构建部署流程

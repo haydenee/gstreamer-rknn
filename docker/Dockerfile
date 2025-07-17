@@ -43,7 +43,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     unzip \
     zip \
     rsync \
-    openssh-client
+    openssh-client \
+    avahi-utils \
+    libnss-mdns \
+    libnss-resolve
 
 # 步骤2: 安装交叉编译工具链
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
