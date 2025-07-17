@@ -92,7 +92,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     gstreamer1.0-plugins-bad:arm64 \
     libglib2.0-dev-bin:arm64
 
-# 步骤6: 创建ARM64库目录结构
+# 步骤5: 创建ARM64库目录结构
 RUN mkdir -p /opt/arm64-libs/usr/lib/aarch64-linux-gnu && \
     mkdir -p /opt/arm64-libs/usr/include
 
