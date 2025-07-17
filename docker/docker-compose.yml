@@ -23,8 +23,9 @@ services:
       - ..:/workspace
       # SSH密钥和配置
       - ~/.ssh:/home/${USER_NAME:-developer}/.ssh:ro
-      # 根用户配置持久化（包含VSCode Server、缓存、历史记录等）
+      # 用户配置持久化（包含VSCode Server、缓存、历史记录等）
       - ./.root:/root
+      - ./.home:/home
     working_dir: /workspace
     stdin_open: true
     tty: true
