@@ -277,17 +277,7 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
         GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", filter->dma_heap_fd);
     }
     filter->src_buffer_index = 0;
-
     filter->rknn_model_loaded = FALSE;
-    if (filter->rknn_process.model_path) {
-        GST_INFO_OBJECT(filter, "Using RKNN model: %s", filter->rknn_process.model_path);
-        rknn_prepare(&filter->rknn_process);
-        GST_INFO_OBJECT(filter, "RKNN model loaded: width=%d, height=%d, channel=%d",
-            filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_channel);
-        filter->rknn_model_loaded = TRUE;
-    } else {
-        GST_INFO_OBJECT(filter, "No RKNN model path specified");
-    }
 
     for (int i = 0; i < MAX_DMABUF_INSTANCES; ++i) {
         filter->cached_dmabuf_fd[i] = -1;
@@ -311,12 +301,9 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     // for rknn task
     filter->queue = g_async_queue_new();
     GST_LOG_OBJECT(filter, "gst_plugin_rknn_init");
-    filter->task_data = g_new0(RknnTaskData, 1);
-    filter->task_data->filter = filter;
-    filter->task_data->stop = FALSE;
-    filter->task_thread = g_thread_new(
-        "rknn_task_thread", rknn_task_func, filter->task_data);
-}
+    filter->task_data = NULL;
+    filter->task_thread = NULL;
+    }
 
 static GstStateChangeReturn
 gst_plugin_rknn_change_state(GstElement* element, GstStateChange transition)
@@ -327,6 +314,94 @@ gst_plugin_rknn_change_state(GstElement* element, GstStateChange transition)
     GST_DEBUG_OBJECT(filter, "Handling state change from %s to %s",
         gst_element_state_get_name(GST_STATE_TRANSITION_CURRENT(transition)),
         gst_element_state_get_name(GST_STATE_TRANSITION_NEXT(transition)));
+
+    switch (transition) {
+        case GST_STATE_CHANGE_NULL_TO_READY:
+            GST_DEBUG_OBJECT(filter, "NULL to READY: Initializing basic resources");
+            break;
+            
+        case GST_STATE_CHANGE_READY_TO_PAUSED:
+            GST_DEBUG_OBJECT(filter, "READY to PAUSED: Loading model and starting thread");
+            
+            // Load RKNN model if path is provided
+            if (filter->rknn_process.model_path && !filter->rknn_model_loaded) {
+                if (rknn_prepare(&filter->rknn_process) == 0) {
+                    filter->rknn_model_loaded = TRUE;
+                    GST_INFO_OBJECT(filter, "Successfully loaded RKNN model");
+                } else {
+                    GST_ERROR_OBJECT(filter, "Failed to load RKNN model");
+                    return GST_STATE_CHANGE_FAILURE;
+                }
+            }
+            
+            // Create and start the inference thread
+            if (!filter->task_thread) {
+                filter->task_data = g_new0(RknnTaskData, 1);
+                if (!filter->task_data) {
+                    GST_ERROR_OBJECT(filter, "Failed to allocate task data");
+                    return GST_STATE_CHANGE_FAILURE;
+                }
+                
+                filter->task_data->filter = filter;
+                filter->task_data->stop = FALSE;
+                
+                filter->task_thread = g_thread_new("rknn_task_thread",
+                    rknn_task_func, filter->task_data);
+                if (!filter->task_thread) {
+                    GST_ERROR_OBJECT(filter, "Failed to create inference thread");
+                    g_free(filter->task_data);
+                    filter->task_data = NULL;
+                    return GST_STATE_CHANGE_FAILURE;
+                }
+                
+                GST_INFO_OBJECT(filter, "Successfully started inference thread");
+            }
+            break;
+            
+        case GST_STATE_CHANGE_PAUSED_TO_READY:
+            GST_DEBUG_OBJECT(filter, "PAUSED to READY: Stopping thread and unloading model");
+            
+            // Stop the inference thread
+            if (filter->task_thread) {
+                filter->task_data->stop = TRUE;
+                // Use an empty buffer as sentinel to wake up the thread
+                g_async_queue_push(filter->queue, gst_buffer_new());
+                g_thread_join(filter->task_thread);
+                g_free(filter->task_data);
+                filter->task_data = NULL;
+                filter->task_thread = NULL;
+                GST_INFO_OBJECT(filter, "Successfully stopped inference thread");
+            }
+            
+            // Unload RKNN model
+            if (filter->rknn_model_loaded) {
+                rknn_release(&filter->rknn_process);
+                filter->rknn_model_loaded = FALSE;
+                GST_INFO_OBJECT(filter, "Successfully unloaded RKNN model");
+            }
+            break;
+            
+        case GST_STATE_CHANGE_READY_TO_NULL:
+            GST_DEBUG_OBJECT(filter, "READY to NULL: Cleaning up resources");
+            // Ensure thread is stopped and model is unloaded
+            if (filter->task_thread) {
+                filter->task_data->stop = TRUE;
+                g_async_queue_push(filter->queue, gst_buffer_new());
+                g_thread_join(filter->task_thread);
+                g_free(filter->task_data);
+                filter->task_data = NULL;
+                filter->task_thread = NULL;
+            }
+            
+            if (filter->rknn_model_loaded) {
+                rknn_release(&filter->rknn_process);
+                filter->rknn_model_loaded = FALSE;
+            }
+            break;
+            
+        default:
+            break;
+    }
 
     ret = GST_ELEMENT_CLASS(parent_class)->change_state(element, transition);
     
@@ -646,14 +721,6 @@ static gpointer rknn_task_func(gpointer data)
     GstPluginRknn* filter = task_data->filter;
     GST_INFO_OBJECT(filter, "Starting rknn task thread");
     while (!task_data->stop) {
-
-        if (filter->rknn_process.model_path && !filter->rknn_model_loaded) {
-            GST_INFO_OBJECT(filter, "Using RKNN model: %s", filter->rknn_process.model_path);
-            rknn_prepare(&filter->rknn_process);
-            GST_INFO_OBJECT(filter, "RKNN model loaded: width=%d, height=%d, channel=%d",
-                filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_channel);
-            filter->rknn_model_loaded = TRUE;
-        }
 
         GstBuffer* buf = g_async_queue_pop(filter->queue);
         gint64 current_time = g_get_monotonic_time();
