@@ -62,7 +62,7 @@ cleanup_containers() {
 # 构建镜像
 build_image() {
     log "构建RK3588交叉编译镜像..."
-    docker compose -f "$SCRIPT_DIR/docker-compose.yml" build --no-cache
+    docker compose -f "$SCRIPT_DIR/docker-compose.yml" build
     log "镜像构建完成 ✓"
 }
 
