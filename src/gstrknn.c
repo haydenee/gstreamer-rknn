@@ -141,6 +141,8 @@ static void gst_plugin_rknn_set_property(GObject* object,
     guint prop_id, const GValue* value, GParamSpec* pspec);
 static void gst_plugin_rknn_get_property(GObject* object,
     guint prop_id, GValue* value, GParamSpec* pspec);
+static GstStateChangeReturn gst_plugin_rknn_change_state(GstElement* element, 
+    GstStateChange transition);
 
 static gboolean gst_plugin_rknn_sink_event(GstPad* pad,
     GstObject* parent, GstEvent* event);
@@ -203,6 +205,9 @@ gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
     gobject_class->set_property = gst_plugin_rknn_set_property;
     gobject_class->get_property = gst_plugin_rknn_get_property;
     gobject_class->finalize = (GObjectFinalizeFunc)gst_plugin_rknn_finalize;
+    
+    gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_plugin_rknn_change_state);
+    
 
     g_object_class_install_property(gobject_class, PROP_SILENT,
         g_param_spec_boolean("silent", "Silent", "Produce verbose output ?",
@@ -311,6 +316,21 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     filter->task_data->stop = FALSE;
     filter->task_thread = g_thread_new(
         "rknn_task_thread", rknn_task_func, filter->task_data);
+}
+
+static GstStateChangeReturn
+gst_plugin_rknn_change_state(GstElement* element, GstStateChange transition)
+{
+    GstStateChangeReturn ret;
+    GstPluginRknn* filter = GST_PLUGIN_RKNN(element);
+
+    GST_DEBUG_OBJECT(filter, "Handling state change from %s to %s",
+        gst_element_state_get_name(GST_STATE_TRANSITION_CURRENT(transition)),
+        gst_element_state_get_name(GST_STATE_TRANSITION_NEXT(transition)));
+
+    ret = GST_ELEMENT_CLASS(parent_class)->change_state(element, transition);
+    
+    return ret;
 }
 
 static void
