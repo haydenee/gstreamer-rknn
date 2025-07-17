@@ -60,3 +60,12 @@ Build
 
 /build
 /subprojects
+
+# Docker files
+docker/.env
+docker/.root/
+docker/.home/
+docker/build-cache/
+
+# Roo code
+.roo

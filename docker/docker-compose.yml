@@ -1,0 +1,34 @@
+services:
+  gstreamer-rknn-cross:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        - USER_ID=${USER_ID:-1000}
+        - GROUP_ID=${GROUP_ID:-1000}
+        - USER_NAME=${USER_NAME:-developer}
+    container_name: gstreamer-rknn-cross
+    hostname: gstreamer-rknn-cross
+    privileged: true
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - USER=${USER_NAME:-developer}
+      - USER_ID=${USER_ID:-1000}
+      - GROUP_ID=${GROUP_ID:-1000}
+      - TARGET_DEVICE=${TARGET_DEVICE:-opi-003}
+      - SSH_USER=${SSH_USER:-root}
+    volumes:
+      # 项目源代码挂载
+      - ..:/workspace
+      # SSH密钥和配置（使用宿主机的$HOME/.ssh）
+      - ${HOME}/.ssh:/home/${USER_NAME:-developer}/.ssh
+      # 用户配置持久化（包含VSCode Server、缓存、历史记录等）
+      - ./.root:/root
+      - ./.home:/home
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash"]
+    extra_hosts:
+      - "gstreamer-rknn-cross:127.0.0.1"
