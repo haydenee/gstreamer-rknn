@@ -1,0 +1,15 @@
+{
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build-aarch64/compile_commands.json",
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "C_Cpp.autocomplete": "default",
+    "C_Cpp.errorSquiggles": "enabled",
+    "files.associations": {
+        "*.h": "c",
+        "*.c": "c",
+        "*.cc": "cpp",
+        "*.cpp": "cpp"
+    },
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build-aarch64"
+    ]
+}
