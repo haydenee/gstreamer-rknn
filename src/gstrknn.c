@@ -578,7 +578,8 @@ gst_plugin_rknn_src_event(GstPad* pad, GstObject* parent, GstEvent* event)
 {
     GstPluginRknn* filter = GST_PLUGIN_RKNN(parent);
     gboolean ret;
-
+    GST_LOG_OBJECT(filter, "Received %s event: %" GST_PTR_FORMAT,
+        GST_EVENT_TYPE_NAME(event), event);
     switch (GST_EVENT_TYPE(event)) {
     case GST_EVENT_CAPS: {
         GstCaps* caps;
