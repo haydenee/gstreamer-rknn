@@ -148,6 +148,8 @@ static gboolean gst_plugin_rknn_sink_event(GstPad* pad,
     GstObject* parent, GstEvent* event);
 static gboolean gst_plugin_rknn_src_event(GstPad* pad,
     GstObject* parent, GstEvent* event);
+static gboolean gst_plugin_rknn_sink_query(GstPad *pad, 
+    GstObject *parent, GstQuery *query);
 static GstFlowReturn gst_plugin_rknn_chain(GstPad* pad,
     GstObject* parent, GstBuffer* buf);
 
@@ -207,7 +209,6 @@ gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
     gobject_class->finalize = (GObjectFinalizeFunc)gst_plugin_rknn_finalize;
     
     gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_plugin_rknn_change_state);
-    
 
     g_object_class_install_property(gobject_class, PROP_SILENT,
         g_param_spec_boolean("silent", "Silent", "Produce verbose output ?",
@@ -256,6 +257,8 @@ gst_plugin_rknn_init(GstPluginRknn* filter)
     filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
     gst_pad_set_event_function(filter->sinkpad,
         GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_event));
+    gst_pad_set_query_function(filter->sinkpad,
+        GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_query));
     gst_pad_set_chain_function(filter->sinkpad,
         GST_DEBUG_FUNCPTR(gst_plugin_rknn_chain));
     gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad);
@@ -573,6 +576,17 @@ gst_plugin_rknn_sink_event(GstPad* pad, GstObject* parent,
     return ret;
 }
 
+/* 处理 sink query 协商，强制上游使用 DMA-buf*/
+static gboolean
+gst_plugin_rknn_sink_query(GstPad *pad,
+                           GstObject *parent,
+                           GstQuery *query)
+{
+
+    return gst_pad_query_default(pad, parent, query);
+}
+
+
 static gboolean
 gst_plugin_rknn_src_event(GstPad* pad, GstObject* parent, GstEvent* event)
 {
@@ -608,8 +622,10 @@ gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
 {
     // passed in buf already has a ref count of 1. If we pass out a buffer, it also needs a ref count of 1.
     GstPluginRknn* filter;
-
+    GstMemory* mem = gst_buffer_peek_memory(buf, 0);
+    gboolean is_dma = gst_is_dmabuf_memory(mem);
     filter = GST_PLUGIN_RKNN(parent);
+    GST_DEBUG_OBJECT(filter, "New buf arrived. is_dma: %d", is_dma);
 
     g_async_queue_push(filter->queue, gst_buffer_ref(buf));
 
@@ -737,9 +753,6 @@ static gpointer rknn_task_func(gpointer data)
             GST_WARNING_OBJECT(filter, "Received NULL buffer");
             continue;
         }
-
-        if (filter->silent == FALSE)
-            g_print("I'm plugged, therefore I'm in.\n");
 
         if (filter->bypass) {
             /* if we are in bypass mode, just push the buffer out */

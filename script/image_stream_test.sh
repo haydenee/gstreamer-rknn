@@ -22,7 +22,7 @@ gst-launch-1.0 -e \
     ! mpph264enc rc-mode=cbr bps=2000000 gop=30 level=4.2 profile=baseline \
     ! h264parse \
     ! mp4mux \
-    ! filesink location=bus_detection_output.mp4
+    ! filesink location=test/bus_detection_output.mp4
 
 # 如果需要实时流输出，可以使用下面的命令（取消注释）
 # gst-launch-1.0 -v \
