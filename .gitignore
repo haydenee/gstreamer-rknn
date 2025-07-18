@@ -71,3 +71,4 @@ docker/build-cache/
 
 # Roo code
 .roo
+log

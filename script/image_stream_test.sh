@@ -1,14 +1,15 @@
 #!/bin/bash
 
-# 设置调试级别
-export GST_DEBUG=*:3,rknn:6
+# 设置调试级别 - 使用最高级别verbosity
+export GST_DEBUG=*:3,rknn:7
 export GST_MPP_NO_RGA=0
 
 # 使用multifilesrc从test/bus.jpg创建30fps的视频流
 # 每帧都使用相同的图片，模拟30fps视频流
 # 图片实际分辨率为810x1080，需要缩放到640x640以适应yolov5s模型
+# 使用num-buffers=100限制为100帧后自动停止
 gst-launch-1.0 -e \
-  multifilesrc location=test/bus.jpg loop=true \
+  multifilesrc location=test/bus.jpg loop=true num-buffers=100 \
     ! image/jpeg,width=810,height=1080,framerate=30/1 \
     ! jpegdec \
     ! videoconvert \
