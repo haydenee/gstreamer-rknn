@@ -21,13 +21,13 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <stddef.h>
-#include <gst/gstbuffer.h>
 #include <gst/gstallocator.h>
+#include <gst/gstbuffer.h>
 #include <gst/gstbufferpool.h>
 #include <gst/video/gstvideometa.h>
 #include <gst/video/gstvideopool.h>
 #include <gst/video/video.h>
+#include <stddef.h>
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -100,11 +100,10 @@ void dmabuf_heap_close(void) {
 }
 
 // 自定义allocator的alloc函数实现
-GstMemory* dmabuf_allocator_alloc(GstAllocator *allocator, gsize size,
+GstMemory *dmabuf_allocator_alloc(GstAllocator *allocator, gsize size,
                                   GstAllocationParams *params) {
   gint fd;
   GstMemory *mem;
-
 
   // 使用我们的dma-heap分配一个fd
   fd = dmabuf_heap_alloc(size);
@@ -145,9 +144,9 @@ GstMemory* dmabuf_allocator_alloc(GstAllocator *allocator, gsize size,
  * gst_object_unref().
  */
 
-GstFlowReturn  (*acquire_buffer) (GstBufferPool *pool, GstBuffer **buffer, GstBufferPoolAcquireParams *params);                
+
 GstVideoBufferPool *dma_buffer_pool_new(GstVideoFormat format, gint width,
-                                   gint height, gint align) {
+                                        gint height, gint w_align, gint h_align) {
   GstBufferPool *pool = NULL;
   GstAllocator *allocator = NULL;
   GstStructure *config = NULL;
@@ -170,11 +169,10 @@ GstVideoBufferPool *dma_buffer_pool_new(GstVideoFormat format, gint width,
     goto error;
   }
   // 创建 GstCaps 并用 GstCaps 创建 GstVideoInfo
-  caps = gst_caps_new_simple(
-      "video/x-raw", "format", G_TYPE_STRING,
-      gst_video_format_to_string(format), "width", G_TYPE_INT, width, "height",
-      G_TYPE_INT, height,
-      NULL);
+  caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING,
+                             gst_video_format_to_string(format), "width",
+                             G_TYPE_INT, width, "height", G_TYPE_INT, height,
+                             NULL);
 
   if (!caps) {
     GST_ERROR("Failed to create caps.\n");
@@ -204,12 +202,12 @@ GstVideoBufferPool *dma_buffer_pool_new(GstVideoFormat format, gint width,
   // stride_align 可以确保每一行数据的起始地址对齐（如果需要）。
   // 这里假设 align 主要用于 width/height 对齐，并可能影响 stride。
   // GStreamer 会根据 info 和 video_align 计算最终的 buffer_size 和 offsets。
-  video_align.padding_right = GST_ROUND_UP_N(width, align) - width;
-  video_align.padding_bottom = GST_ROUND_UP_N(height, align) - height;
+  video_align.padding_right = GST_ROUND_UP_N(width, w_align) - width;
+  video_align.padding_bottom = GST_ROUND_UP_N(height, h_align) - height;
   // 如果需要每一行的 stride 也对齐，可以设置：
   // 注意：stride_align 是一个掩码，通常设置为 (align - 1)。
   for (int i = 0; i < GST_VIDEO_MAX_PLANES; i++) {
-    video_align.stride_align[i] = align - 1; // align-1 because it's a mask
+    video_align.stride_align[i] = w_align - 1; // align-1 because it's a mask
   }
 
   // 将对齐信息应用到配置
@@ -280,37 +278,41 @@ error:
 }
 
 // Buffer logging function
-void log_buffer_info(GstBuffer* buf) {
+void log_buffer_info(GstBuffer *buf) {
   if (!buf) {
-    GST_WARNING( "Buffer is NULL");
+    GST_WARNING("Buffer is NULL");
     return;
   }
 
   // 获取 buffer 的基本信息
   GstClockTime pts = GST_BUFFER_PTS(buf);
   guint64 offset = GST_BUFFER_OFFSET(buf);
-  
+
   // 尝试从 buffer 获取视频元数据
-  GstVideoMeta* meta = gst_buffer_get_video_meta(buf);
+  GstVideoMeta *meta = gst_buffer_get_video_meta(buf);
   if (meta) {
     // 从 GstVideoMeta 获取 width, height 和 stride 信息
     guint width = meta->width;
     guint height = meta->height;
     guint n_planes = meta->n_planes;
-    
-    // 打印 buffer 信息
-    GST_DEBUG("Buffer info - PTS: %" GST_TIME_FORMAT ", Offset: %" G_GUINT64_FORMAT ", Width: %u, Height: %u, Planes: %u",
-                       GST_TIME_ARGS(pts), offset, width, height, n_planes);
-    
+    GstVideoFormat format = meta->format;
+
+    // 打印 buffer 信息，包含格式
+    GST_DEBUG("Buffer info - PTS: %" GST_TIME_FORMAT
+              ", Offset: %" G_GUINT64_FORMAT
+              ", Format: %s, Width: %u, Height: %u, Planes: %u",
+              GST_TIME_ARGS(pts), offset,
+              gst_video_format_to_string(format), width, height, n_planes);
+
     // 打印每个平面的 stride 信息
     for (guint i = 0; i < n_planes && i < GST_VIDEO_MAX_PLANES; i++) {
-      GST_DEBUG("  Plane %u - Offset: %" G_GSIZE_FORMAT ", Stride: %d",
-                         i, meta->offset[i], meta->stride[i]);
+      GST_DEBUG("  Plane %u - Offset: %" G_GSIZE_FORMAT ", Stride: %d", i,
+                meta->offset[i], meta->stride[i]);
     }
   } else {
     // 如果没有视频元数据，尝试从 caps 获取信息
-    GST_DEBUG("Buffer info - PTS: %" GST_TIME_FORMAT ", Offset: %" G_GUINT64_FORMAT " (No video meta available)",
-                       GST_TIME_ARGS(pts), offset);
+    GST_DEBUG("Buffer info - PTS: %" GST_TIME_FORMAT
+              ", Offset: %" G_GUINT64_FORMAT " (No video meta available)",
+              GST_TIME_ARGS(pts), offset);
   }
 }
-
