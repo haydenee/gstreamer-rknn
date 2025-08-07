@@ -287,6 +287,63 @@ void log_buffer_info(GstBuffer *buf) {
   // 获取 buffer 的基本信息
   GstClockTime pts = GST_BUFFER_PTS(buf);
   guint64 offset = GST_BUFFER_OFFSET(buf);
+  guint size = gst_buffer_get_size(buf);
+
+  GST_DEBUG("Buffer basic info - PTS: %" GST_TIME_FORMAT
+            ", Offset: %" G_GUINT64_FORMAT
+            ", Size: %u bytes",
+            GST_TIME_ARGS(pts), offset, size);
+
+  // 打印 buffer 中所有的内存块信息
+  guint num_mems = gst_buffer_n_memory(buf);
+  GST_DEBUG("Buffer contains %u memory blocks:", num_mems);
+  
+  for (guint i = 0; i < num_mems; i++) {
+    GstMemory *mem = gst_buffer_peek_memory(buf, i);
+    if (mem) {
+      GstMapInfo map_info;
+      
+      // 尝试映射内存以获取更多信息
+      if (gst_memory_map(mem, &map_info, GST_MAP_READ)) {
+        GST_DEBUG("  Memory block %u - Size: %" G_GSIZE_FORMAT
+                  ", Maxsize: %" G_GSIZE_FORMAT
+                  ", Offset: %" G_GSIZE_FORMAT
+                  ", Allocator: %s"
+                  ", Parent: %p"
+                  ", Mapped: yes (size: %" G_GSIZE_FORMAT ")",
+                  i,
+                  mem->size,
+                  mem->maxsize,
+                  mem->offset,
+                  mem->allocator ? GST_OBJECT_NAME(mem->allocator) : "none",
+                  mem->parent,
+                  map_info.size);
+        
+        // 尝试获取 DMA-BUF 特定信息
+        if (mem->allocator && g_strcmp0(GST_OBJECT_NAME(mem->allocator), "GstDmaBufAllocator") == 0) {
+          gint fd = gst_dmabuf_memory_get_fd(mem);
+          GST_DEBUG("    DMA-BUF FD: %d", fd);
+        }
+        
+        gst_memory_unmap(mem, &map_info);
+      } else {
+        GST_DEBUG("  Memory block %u - Size: %" G_GSIZE_FORMAT
+                  ", Maxsize: %" G_GSIZE_FORMAT
+                  ", Offset: %" G_GSIZE_FORMAT
+                  ", Allocator: %s"
+                  ", Parent: %p"
+                  ", Mapped: no",
+                  i,
+                  mem->size,
+                  mem->maxsize,
+                  mem->offset,
+                  mem->allocator ? GST_OBJECT_NAME(mem->allocator) : "none",
+                  mem->parent);
+      }
+    } else {
+      GST_DEBUG("  Memory block %u - NULL", i);
+    }
+  }
 
   // 尝试从 buffer 获取视频元数据
   GstVideoMeta *meta = gst_buffer_get_video_meta(buf);
@@ -298,10 +355,7 @@ void log_buffer_info(GstBuffer *buf) {
     GstVideoFormat format = meta->format;
 
     // 打印 buffer 信息，包含格式
-    GST_DEBUG("Buffer info - PTS: %" GST_TIME_FORMAT
-              ", Offset: %" G_GUINT64_FORMAT
-              ", Format: %s, Width: %u, Height: %u, Planes: %u",
-              GST_TIME_ARGS(pts), offset,
+    GST_DEBUG("Buffer video meta - Format: %s, Width: %u, Height: %u, Planes: %u",
               gst_video_format_to_string(format), width, height, n_planes);
 
     // 打印每个平面的 stride 信息
@@ -309,10 +363,6 @@ void log_buffer_info(GstBuffer *buf) {
       GST_DEBUG("  Plane %u - Offset: %" G_GSIZE_FORMAT ", Stride: %d", i,
                 meta->offset[i], meta->stride[i]);
     }
-  } else {
-    // 如果没有视频元数据，尝试从 caps 获取信息
-    GST_DEBUG("Buffer info - PTS: %" GST_TIME_FORMAT
-              ", Offset: %" G_GUINT64_FORMAT " (No video meta available)",
-              GST_TIME_ARGS(pts), offset);
   }
+  
 }
