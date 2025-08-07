@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "postprocess.h"
+#include "common_structs.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -181,9 +182,9 @@ static int quick_sort_indice_inverse(std::vector<float> &input, int left, int ri
   return low;
 }
 
-static float sigmoid(float x) { return 1.0 / (1.0 + expf(-x)); }
+// static float sigmoid(float x) { return 1.0 / (1.0 + expf(-x)); }
 
-static float unsigmoid(float y) { return -1.0 * logf((1.0 / y) - 1.0); }
+// static float unsigmoid(float y) { return -1.0 * logf((1.0 / y) - 1.0); }
 
 inline static int32_t __clip(float val, float min, float max)
 {

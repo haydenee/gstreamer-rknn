@@ -1,8 +1,18 @@
 #include "rgaprocess.h"
+#include "RgaUtils.h"
+#include "gst/gstmemory.h"
+#include "gst/gstbufferpool.h"
+#include "gst/gststructure.h"
 #include "opencv2/core/core.hpp"
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
+#include "gst/allocators/gstdmabuf.h"
+#include "gst/video/video-info.h"
+#include "gst/gstinfo.h"
 
+
+GST_DEBUG_CATEGORY_EXTERN (gst_plugin_rknn_debug);
+#define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
 #define GST_RGA_FORMAT(gst, rga, pixel_stride0, yuv) \
   { GST_VIDEO_FORMAT_ ## gst, RK_FORMAT_ ## rga, pixel_stride0, yuv }
@@ -148,6 +158,196 @@ int calc_buffer_size(int width, int height, GstVideoFormat gst_format)
     // 未知格式
     return 0;
 }
+
+int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
+{
+    if (!gst_buf || !rga_buf) {
+        return -1;
+    }
+
+    GstMemory* mem = gst_buffer_peek_memory(gst_buf, 0);
+    if (!mem || !gst_is_dmabuf_memory(mem)) {
+        return -1;
+    }
+
+    int fd = gst_dmabuf_memory_get_fd(mem);
+    if (fd < 0) {
+        return -1;
+    }
+
+    // // 首先检查 buffer 的 pool 信息
+    // GstBufferPool *buffer_pool = gst_buf->pool;
+    // GST_INFO("Buffer Pool 信息:");
+    // if (buffer_pool == NULL) {
+    //   GST_INFO("  - Buffer Pool: NULL (缓冲池为空)");
+    // } else {
+    //   GST_INFO("  - Buffer Pool: %p (非空)", buffer_pool);
+    //   GST_INFO("  - Buffer Pool 类型: %s", G_OBJECT_TYPE_NAME(buffer_pool));
+      
+    //   // 尝试获取缓冲池的配置信息
+    //   GstStructure *config = gst_buffer_pool_get_config(buffer_pool);
+    //   if (config) {
+    //     GST_INFO("  - Buffer Pool 配置: %s", gst_structure_to_string(config));
+    //     gst_structure_free(config);
+    //   } else {
+    //     GST_INFO("  - Buffer Pool 配置: 无法获取");
+    //   }
+    // }
+
+    GstVideoMeta* meta = gst_buffer_get_video_meta(gst_buf);
+
+    GstVideoFormat format = meta->format;
+    gint width = meta->width;
+    gint height = meta->height;
+    const GstVideoFormatInfo* format_info = gst_video_format_get_info(format);
+    gint wstride = meta->stride[0] / format_info->pixel_stride[0];
+
+    //gint hstride = height + alignment.padding_bottom;
+    gint hstride = height;
+    
+    // GST_DEBUG("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
+    // GST_DEBUG("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
+    RgaSURF_FORMAT rga_format = gst_to_rga_format(format);
+    if (rga_format == RK_FORMAT_UNKNOWN) {
+        return -1;
+    }
+
+    // Assuming height is hstride.
+    *rga_buf = wrapbuffer_fd_t(fd, width, height, wstride, hstride, rga_format);
+    GST_LOG("Wrapping: fd:%d width:%d height:%d wstride:%d hstride:%d format:%d", fd, width, height, wstride, hstride, (int)rga_format);
+    return 0;
+}
+
+int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
+{
+    if (!src_buf || !dst_buf) {
+        GST_WARNING_OBJECT(obj, "Invalid buffer parameters in convert_format");
+        return -1;
+    }
+
+    // // Log source buffer information
+    // log_buffer_info(obj, src_buf);
+    
+    // // Log destination buffer information
+    // log_buffer_info(obj, dst_buf);
+
+    rga_buffer_t rga_src_buf;
+    rga_buffer_t rga_dst_buf;
+
+    GST_LOG_OBJECT(obj, "Converting buffer format using RGA");
+
+    // Convert GstBuffer to rga_buffer_t
+    if (gst_buffer_to_rga_buffer(src_buf, &rga_src_buf) != 0) {
+        GST_WARNING_OBJECT(obj, "Failed to convert source buffer to RGA buffer");
+        return -1;
+    }
+
+    if (gst_buffer_to_rga_buffer(dst_buf, &rga_dst_buf) != 0) {
+        GST_WARNING_OBJECT(obj, "Failed to convert destination buffer to RGA buffer");
+        return -1;
+    }
+
+    // Get dimensions from rga_buffer_t
+    int width = rga_src_buf.width;
+    int height = rga_src_buf.height;
+
+    GST_DEBUG_OBJECT(obj, "Source dimensions: %dx%d", width, height);
+
+    im_rect src_rect = {0, 0, width, height};
+    im_rect dst_rect = {0, 0, width, height};
+    rga_buffer_t pat = wrapbuffer_virtualaddr_t(NULL, 0, 0, 0, 0, RK_FORMAT_RGB_888); // pattern unused
+    im_rect rect_pat = { 0, 0, 0, 0 }; // pattern rect unused
+    // Use RGA to perform the format conversion
+
+    GstMapInfo src_map, dst_map;
+    if (!gst_buffer_map(src_buf, &src_map, GST_MAP_READ)) {
+        GST_WARNING_OBJECT(obj, "Failed to map source buffer");
+        return -1;
+    }
+    if (!gst_buffer_map(dst_buf, &dst_map, GST_MAP_WRITE)) {
+        GST_WARNING_OBJECT(obj, "Failed to map target buffer");
+        return -1;
+    }
+
+    GST_LOG_OBJECT(obj, "Performing RGA format conversion");
+    int ret = improcess(rga_src_buf, rga_dst_buf, pat, src_rect, dst_rect, rect_pat, IM_SYNC);
+    if (ret != IM_STATUS_SUCCESS) {
+        GST_ERROR_OBJECT(obj, "RGA format conversion failed with error code: %d", ret);
+        return -1;
+    }
+
+    gst_buffer_unmap(src_buf, &src_map);
+    gst_buffer_unmap(dst_buf, &dst_map);
+    GST_LOG_OBJECT(obj, "Format conversion completed successfully");
+    return 0;
+}
+
+int scale_with_aspect_ratio(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
+{
+    if (!src_buf || !dst_buf) {
+        GST_WARNING_OBJECT(obj, "Invalid buffer parameters in scale_with_aspect_ratio");
+        return -1;
+    }
+    // Log source buffer information
+    // log_buffer_info(obj, src_buf);
+    
+    // Log destination buffer information
+    // log_buffer_info(obj, dst_buf);
+
+    rga_buffer_t rga_src_buf;
+    rga_buffer_t rga_dst_buf;
+
+    GST_LOG_OBJECT(obj, "Scaling buffer with aspect ratio using RGA");
+
+    // Convert GstBuffer to rga_buffer_t
+    if (gst_buffer_to_rga_buffer(src_buf, &rga_src_buf) != 0) {
+        GST_WARNING_OBJECT(obj, "Failed to convert source buffer to RGA buffer");
+        return -1;
+    }
+
+    if (gst_buffer_to_rga_buffer(dst_buf, &rga_dst_buf) != 0) {
+        GST_WARNING_OBJECT(obj, "Failed to convert destination buffer to RGA buffer");
+        return -1;
+    }
+
+    // Get dimensions from rga_buffer_t
+    int src_width = rga_src_buf.width;
+    int src_height = rga_src_buf.height;
+    int dst_width = rga_dst_buf.width;
+    int dst_height = rga_dst_buf.height;
+
+    GST_DEBUG_OBJECT(obj, "Source dimensions: %dx%d, Destination dimensions: %dx%d", 
+                     src_width, src_height, dst_width, dst_height);
+
+    // Calculate scaling ratio to maintain aspect ratio
+    float scale_w = (float)dst_width / src_width;
+    float scale_h = (float)dst_height / src_height;
+    float scale = scale_w < scale_h ? scale_w : scale_h;
+    
+    int new_w = (int)(src_width * scale + 0.5f);
+    int new_h = (int)(src_height * scale + 0.5f);
+    
+    int offset_x = (dst_width - new_w) / 2;
+    int offset_y = (dst_height - new_h) / 2;
+
+    GST_DEBUG_OBJECT(obj, "Scaling parameters - Scale: %.2f, New dimensions: %dx%d, Offset: (%d, %d)", 
+                     scale, new_w, new_h, offset_x, offset_y);
+
+    im_rect src_rect = {0, 0, src_width, src_height};
+    im_rect dst_rect = {offset_x, offset_y, new_w, new_h};
+    
+    // Use RGA to perform the scaling with aspect ratio
+    GST_LOG_OBJECT(obj, "Performing RGA scaling with aspect ratio");
+    int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
+    if (ret != IM_STATUS_SUCCESS) {
+        GST_ERROR_OBJECT(obj, "RGA scaling with aspect ratio failed with error code: %d", ret);
+        return -1;
+    }
+
+    GST_LOG_OBJECT(obj, "Scaling with aspect ratio completed successfully");
+    return 0;
+}
+
 #ifdef __cplusplus
 }
 #endif

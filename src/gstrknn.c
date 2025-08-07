@@ -1,501 +1,855 @@
-/*
- * GStreamer
- * Copyright (C) 2005 Thomas Vander Stichele <thomas@apestaart.org>
- * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
- * Copyright (C) YEAR AUTHOR_NAME AUTHOR_EMAIL
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- *
- * Alternatively, the contents of this file may be used under the
- * GNU Lesser General Public License Version 2.1 (the "LGPL"), in
- * which case the following provisions apply instead of the ones
- * mentioned above:
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Library General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Library General Public License for more details.
- *
- * You should have received a copy of the GNU Library General Public
- * License along with this library; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 02111-1307, USA.
- */
-
-/**
- * SECTION:element-plugin
- *
- * FIXME:Describe plugin here.
- *
- * <refsect2>
- * <title>Example launch line</title>
- * |[
- * gst-launch -v -m fakesrc ! plugin ! fakesink silent=TRUE
- * ]|
- * </refsect2>
- */
+#include "dmabuf.h"
+#include "rknnprocess.h"
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include "glib.h"
-#include "gst/allocators/gstdmabuf.h"
 #include "gst/gstbuffer.h"
 #include "gst/gstinfo.h"
 #include "gst/gstmemory.h"
 #include "gst/gstpad.h"
 #include "gst/video/video-format.h"
-#include "gst/video/video-info.h"
-#include "rknnprocess.h"
-#include <unistd.h>
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
-
 #include <gst/gst.h>
-#include <gst/video/video.h>
+#include <gst/video/gstvideopool.h>
+#include <math.h>
 
-#include "dmabuffer.h"
+#include "common_structs.h"
 #include "gstrknn.h"
-
-#include "RgaUtils.h"
-#include "im2d.h"
-#include "rga.h"
 #include "rgaprocess.h"
-#include "stdio.h"
-GST_DEBUG_CATEGORY_STATIC(gst_plugin_rknn_debug);
+#include "unistd.h"
+
+/* Forward declarations */
+static gpointer push_thread(gpointer data);
+static gpointer rknn_engine_thread(gpointer data);
+
+GST_DEBUG_CATEGORY(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
-/* Filter signals and args */
-enum {
-    /* FILL ME */
-    LAST_SIGNAL
-};
+/* Buffer offset 比较函数 */
+static gint buffer_offset_compare(gconstpointer a, gconstpointer b) {
+  GstBuffer *buf_a = (GstBuffer *)a;
+  GstBuffer *buf_b = (GstBuffer *)b;
 
-enum {
-    PROP_0,
-    PROP_SILENT = 1,
-    PROP_BYPASS = 2,
-    PROP_MODEL_PATH = 3,
-    PROP_LABEL_PATH = 4,
-    PROP_SHOW_FPS = 5,
-    PROP_FRAME_SKIP = 6,
-} PROP_ID;
+  if (buf_a->offset < buf_b->offset) {
+    return -1;
+  } else if (buf_a->offset > buf_b->offset) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+/* RKNN 推理消费者线程 */
+typedef struct {
+  GstPluginRknn *filter;
+  gint worker_id;
+} ThreadData;
+
+/* 初始化 RKNN 推理引擎，并获得 RKNN 输入所需的长宽 */
+static gboolean init_rknn_engines(GstPluginRknn *filter) {
+  // 为 RKNN 引擎数组分配内存
+  filter->rknn_engines = (struct RknnEngine **)g_malloc0(
+      sizeof(struct RknnEngine *) * filter->workers);
+
+  // 初始化每个 RKNN 引擎
+  for (int i = 0; i < filter->workers; i++) {
+    // 为每个引擎分配内存
+    filter->rknn_engines[i] =
+        (struct RknnEngine *)g_malloc0(sizeof(struct RknnEngine));
+    struct RknnEngine *rknn_engine = filter->rknn_engines[i];
+
+    // 设置模型路径和标签路径
+    if (filter->model_path) {
+      rknn_engine->model_path = g_strdup(filter->model_path);
+    }
+
+    if (filter->label_path) {
+      rknn_engine->label_path = g_strdup(filter->label_path);
+    }
+
+    // 初始化 RKNN 引擎
+    int ret = rknn_prepare(rknn_engine);
+    if (ret < 0) {
+      GST_ERROR_OBJECT(filter, "Failed to initialize RKNN engine %d", i);
+      // 使用 destroy_rknn_engines 来释放所有已分配的资源
+      destroy_rknn_engines(filter);
+      return FALSE;
+    }
+
+    // 设置原始图像尺寸
+    rknn_engine->original_width = filter->sink_width;
+    rknn_engine->original_height = filter->sink_height;
+
+    // 计算缩放比例和填充
+    float scale_w = (float)rknn_engine->model_width / filter->sink_width;
+    float scale_h = (float)rknn_engine->model_height / filter->sink_height;
+    float scale = fmin(scale_w, scale_h);
+
+    int new_width = (int)(filter->sink_width * scale);
+    int new_height = (int)(filter->sink_height * scale);
+
+    int pad_left = (filter->rknn_width - new_width) / 2;
+    int pad_top = (filter->rknn_height - new_height) / 2;
+
+    rknn_engine->scale_w = scale;
+    rknn_engine->scale_h = scale;
+    rknn_engine->pads.left = pad_left;
+    rknn_engine->pads.top = pad_top;
+    rknn_engine->pads.right = pad_left + new_width;
+    rknn_engine->pads.bottom = pad_top + new_height;
+    // 记录第一个引擎的输入尺寸作为参考
+    if (i == 0) {
+      filter->rknn_width = rknn_engine->model_width;
+      filter->rknn_height = rknn_engine->model_height;
+    }
+  }
+
+  GST_INFO_OBJECT(filter, "Initialized %d RKNN engines, model size: %dx%d",
+                  filter->workers, filter->rknn_width, filter->rknn_height);
+
+  return TRUE;
+}
+
+/* 销毁 RKNN 推理引擎 */
+void destroy_rknn_engines(GstPluginRknn *filter) {
+  if (filter->rknn_engines == NULL) {
+    return;
+  }
+  for (int i = 0; i < filter->workers; i++) {
+    if (filter->rknn_engines[i]) {
+      rknn_release(filter->rknn_engines[i]);
+      if (filter->rknn_engines[i]->model_path) {
+        g_free(filter->rknn_engines[i]->model_path);
+      }
+      if (filter->rknn_engines[i]->label_path) {
+        g_free(filter->rknn_engines[i]->label_path);
+      }
+      g_free(filter->rknn_engines[i]);
+    }
+  }
+  g_free(filter->rknn_engines);
+  filter->rknn_engines = NULL;
+}
+
+/* 在运行时申请的资源 */
+static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
+  GST_LOG_OBJECT(filter, "allocate_state_resources start");
+
+  // 只有在模型路径存在时才初始化 RKNN 引擎
+  if (filter->model_path) {
+    if (!init_rknn_engines(filter)) {
+      GST_ERROR_OBJECT(filter, "Failed to initialize RKNN engines");
+      return FALSE;
+    }
+  } else {
+    GST_ERROR_OBJECT(filter,
+                     "No model path specified, RKNN engines not initialized");
+    return FALSE;
+  }
+
+  // 创建缓冲区池来替代直接创建缓冲区
+  if (filter->sink_caps) {
+    GST_INFO_OBJECT(filter,
+                    "Creating buffer pools to replace direct buffer creation");
+
+    // 使用新的工具函数创建 RKNN 输入缓冲区池
+    GError *error = NULL;
+    filter->rknn_buffer_pool = dma_buffer_pool_new(
+        GST_VIDEO_FORMAT_RGB, filter->rknn_width, filter->rknn_height, 1);
+
+    if (!filter->rknn_buffer_pool) {
+      GST_ERROR_OBJECT(filter, "Failed to create RKNN buffer pool: %s",
+                       error ? error->message : "Unknown error");
+      if (error) {
+        g_error_free(error);
+      }
+      return FALSE;
+    }
+    GST_INFO_OBJECT(filter,
+                    "RKNN buffer pool created and started successfully");
+
+    // 如果源格式不是 RGB，创建 RGB 图像缓冲区池
+    if (!filter->sink_format_is_rgb) {
+      error = NULL;
+      filter->rgb_buffer_pool = dma_buffer_pool_new(
+          GST_VIDEO_FORMAT_RGB, filter->sink_width, filter->sink_height, 16);
+
+      if (!filter->rgb_buffer_pool) {
+        GST_ERROR_OBJECT(filter, "Failed to create RGB buffer pool: %s",
+                         error ? error->message : "Unknown error");
+        if (error) {
+          g_error_free(error);
+        }
+        // 清理已创建的 RKNN 缓冲区池
+        gst_object_unref(filter->rknn_buffer_pool);
+        filter->rknn_buffer_pool = NULL;
+        return FALSE;
+      }
+      GST_INFO_OBJECT(filter,
+                      "RGB buffer pool created and started successfully");
+    } else {
+      GST_INFO_OBJECT(filter,
+                      "Source format is RGB, no need for RGB buffer pool");
+      filter->rgb_buffer_pool = NULL;
+    }
+  }
+  // Initialize task data and start multiple consumer threads
+  GST_INFO_OBJECT(filter, "Creating %d RKNN consumer threads", filter->workers);
+  filter->task_threads = g_new0(GThread *, filter->workers);
+
+  for (int i = 0; i < filter->workers; i++) {
+    ThreadData *thread_data = g_new0(ThreadData, 1);
+    thread_data->filter = filter;
+    thread_data->worker_id = i;
+
+    gchar thread_name[32];
+    g_snprintf(thread_name, sizeof(thread_name), "rknn-consumer-%d", i);
+    filter->task_threads[i] =
+        g_thread_new(thread_name, rknn_engine_thread, thread_data);
+    GST_INFO_OBJECT(filter, "Created RKNN consumer thread %d with name: %s", i,
+                    thread_name);
+  }
+
+  // 创建 output_collector_thread 线程
+  GST_INFO_OBJECT(filter, "Creating output collector thread");
+  filter->output_collector_thread =
+      g_thread_new("output-collector", push_thread, filter);
+  GST_INFO_OBJECT(filter, "Created output collector thread");
+
+  GST_LOG_OBJECT(filter, "allocate_state_resources end");
+  return TRUE;
+}
+
+static void free_rknn_resources(GstPluginRknn *filter) {
+  // 停止并清理多个任务线程
+  if (filter->task_threads) {
+    GST_INFO_OBJECT(filter, "Stopping %d RKNN consumer threads",
+                    filter->workers);
+
+    // 向每个线程发送 NULL buffer 作为停止信号
+    for (int i = 0; i < filter->workers; i++) {
+      GstBuffer *null_buffer = gst_buffer_new();
+      g_async_queue_push(filter->rknn_input_queue, null_buffer);
+    }
+
+    // 等待所有线程结束
+    for (int i = 0; i < filter->workers; i++) {
+      if (filter->task_threads[i]) {
+        GST_DEBUG_OBJECT(filter, "Waiting for worker %d thread to join", i);
+        g_thread_join(filter->task_threads[i]);
+        filter->task_threads[i] = NULL;
+        GST_DEBUG_OBJECT(filter, "Worker %d thread joined successfully", i);
+      }
+    }
+
+    g_free(filter->task_threads);
+    filter->task_threads = NULL;
+    GST_INFO_OBJECT(filter, "All RKNN consumer threads stopped and cleaned up");
+  }
+
+  // 停止并清理 output_collector_thread
+  if (filter->output_collector_thread) {
+    GST_INFO_OBJECT(filter, "Stopping output collector thread");
+    // 向 output_collector_thread 发送 NULL buffer 作为停止信号
+    GstBuffer *null_buffer = gst_buffer_new();
+    g_async_queue_push(filter->rgb_output_queue, null_buffer);
+
+    // 等待线程结束
+    GST_DEBUG_OBJECT(filter, "Waiting for output collector thread to join");
+    g_thread_join(filter->output_collector_thread);
+    filter->output_collector_thread = NULL;
+    GST_DEBUG_OBJECT(filter, "Output collector thread joined successfully");
+    GST_INFO_OBJECT(filter, "Output collector thread stopped and cleaned up");
+  }
+
+  /* Free allocated resources */
+  if (filter->model_path) {
+    g_free(filter->model_path);
+    filter->model_path = NULL;
+  }
+  if (filter->label_path) {
+    g_free(filter->label_path);
+    filter->label_path = NULL;
+  }
+  if (filter->sink_caps) {
+    gst_caps_unref(filter->sink_caps);
+    filter->sink_caps = NULL;
+  }
+  if (filter->src_caps) {
+    gst_caps_unref(filter->src_caps);
+    filter->src_caps = NULL;
+  }
+
+  // 清空处理中的队列
+  if (filter->rknn_input_queue) {
+    GstBuffer *buf;
+    while ((buf = g_async_queue_try_pop(filter->rknn_input_queue)) != NULL) {
+      gst_buffer_unref(buf);
+    }
+    g_async_queue_unref(filter->rknn_input_queue);
+    filter->rknn_input_queue = NULL;
+  }
+
+  if (filter->rgb_input_queue) {
+    GstBuffer *buf;
+    while ((buf = g_async_queue_try_pop(filter->rgb_input_queue)) != NULL) {
+      gst_buffer_unref(buf);
+    }
+    g_async_queue_unref(filter->rgb_input_queue);
+    filter->rgb_input_queue = NULL;
+  }
+
+  if (filter->rknn_output_queue) {
+    GstBuffer *buf;
+    while ((buf = g_async_queue_try_pop(filter->rknn_output_queue)) != NULL) {
+      gst_buffer_unref(buf);
+    }
+    g_async_queue_unref(filter->rknn_output_queue);
+    filter->rknn_output_queue = NULL;
+  }
+
+  // 释放缓冲区池
+  if (filter->rknn_buffer_pool) {
+    GST_INFO_OBJECT(filter, "Stopping RKNN buffer pool");
+    gst_buffer_pool_set_active(GST_BUFFER_POOL(filter->rknn_buffer_pool),
+                               FALSE);
+    gst_object_unref(filter->rknn_buffer_pool);
+    filter->rknn_buffer_pool = NULL;
+  }
+
+  if (filter->rgb_buffer_pool) {
+    GST_INFO_OBJECT(filter, "Stopping RGB buffer pool");
+    gst_buffer_pool_set_active(GST_BUFFER_POOL(filter->rgb_buffer_pool), FALSE);
+    gst_object_unref(filter->rgb_buffer_pool);
+    filter->rgb_buffer_pool = NULL;
+  }
+
+  // 清空乱序缓冲区
+  if (filter->out_of_order_buffers) {
+    GList *l;
+    for (l = filter->out_of_order_buffers; l != NULL; l = l->next) {
+      GstBuffer *buf = (GstBuffer *)l->data;
+      gst_buffer_unref(buf);
+    }
+    g_list_free(filter->out_of_order_buffers);
+    filter->out_of_order_buffers = NULL;
+  }
+
+  // 释放 RKNN 引擎
+  destroy_rknn_engines(filter);
+}
+
+/* 预处理格式转换和缩放 */
+gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_input) {
+  GstBuffer *rknn_buffer = NULL;
+  GstBuffer *rgb_buffer = NULL;
+  gboolean ret = FALSE;
+
+  GST_LOG_OBJECT(filter, "Starting preprocess_buffer function");
+  GST_DEBUG_OBJECT(filter, "raw_input before preprocess");
+  log_buffer_info(raw_input);
+  // 从缓冲区池获取 RKNN 缓冲区
+  GstFlowReturn acquire_result = gst_buffer_pool_acquire_buffer(
+      GST_BUFFER_POOL(filter->rknn_buffer_pool), &rknn_buffer, NULL);
+  if (acquire_result != GST_FLOW_OK || !rknn_buffer) {
+    GST_WARNING_OBJECT(filter, "Failed to acquire RKNN buffer from pool: %s",
+                       gst_flow_get_name(acquire_result));
+    goto error;
+  }
+
+  GST_DEBUG_OBJECT(filter, "Source format: %s, dimensions: %dx%d",
+                   gst_video_format_to_string(filter->sink_format),
+                   filter->sink_width, filter->sink_height);
+
+  // 如果源格式不是 RGB，需要进行格式转换
+  if (!filter->sink_format_is_rgb) {
+    // 从缓冲区池获取 RGB 缓冲区
+    GstFlowReturn rgb_acquire_result = gst_buffer_pool_acquire_buffer(
+        GST_BUFFER_POOL(filter->rgb_buffer_pool), &rgb_buffer, NULL);
+
+    if (rgb_acquire_result != GST_FLOW_OK || !rgb_buffer) {
+      GST_WARNING_OBJECT(filter, "Failed to acquire RGB buffer from pool: %s",
+                         gst_flow_get_name(rgb_acquire_result));
+      goto error;
+    }
+
+    GST_DEBUG_OBJECT(filter, "Source format is not RGB, converting to RGB");
+    // 执行格式转换到原始尺寸的 RGB buffer
+    if (convert_format(GST_OBJECT(filter), raw_input, rgb_buffer) != 0) {
+      GST_ERROR_OBJECT(filter, "Failed to convert format to RGB");
+      goto error;
+    }
+
+    // 原始 buffer 不是 RGB，到这里就没用了
+    gst_buffer_unref(raw_input);
+  } else {
+    GST_DEBUG_OBJECT(filter, "Source format is already RGB, using directly");
+    rgb_buffer = raw_input;
+  }
+
+  // 执行缩放（将原始尺寸的 RGB 图像缩放到 RKNN 输入尺寸）
+  GST_DEBUG_OBJECT(filter, "Scaling buffer to RKNN input size: %dx%d",
+                   filter->rknn_width, filter->rknn_height);
+  if (scale_with_aspect_ratio(GST_OBJECT(filter), rgb_buffer, rknn_buffer) !=
+      0) {
+    GST_ERROR_OBJECT(filter, "Failed to scale buffer to RKNN input size");
+    goto error;
+  }
+
+  // 将处理后的缓冲区放入处理队列（保持原有逻辑）
+
+  rgb_buffer->offset = rknn_buffer->offset = raw_input->offset;
+  rgb_buffer->dts = rknn_buffer->dts = raw_input->dts;
+  rgb_buffer->pts = rknn_buffer->pts = raw_input->pts;
+  rgb_buffer->duration = rknn_buffer->duration = raw_input->duration;
+
+  g_async_queue_push(filter->rknn_input_queue, rknn_buffer);
+  g_async_queue_push(filter->rgb_input_queue, rgb_buffer);
+
+  GST_LOG_OBJECT(filter, "Preprocessing completed successfully");
+  ret = TRUE;
+  return ret;
+
+error:
+  // 释放已分配的资源
+  if (rknn_buffer) {
+    gst_buffer_unref(rknn_buffer);
+  }
+  if (rgb_buffer) {
+    gst_buffer_unref(rgb_buffer);
+  }
+  return ret;
+}
+
+static gpointer rknn_engine_thread(gpointer data) {
+  ThreadData *thread_data = (ThreadData *)data;
+  GstPluginRknn *filter = thread_data->filter;
+  gint worker_id = thread_data->worker_id;
+  struct RknnEngine *rknn_engine = filter->rknn_engines[worker_id];
+
+  GST_INFO_OBJECT(filter, "Starting RKNN engine thread %d", worker_id);
+  while (TRUE) {
+    GstBuffer *rknn_buffer = g_async_queue_pop(filter->rknn_input_queue);
+    if (gst_buffer_get_size(rknn_buffer) == 0) {
+      GST_INFO_OBJECT(filter, "Thread %d recieved ending buffer, stoping",
+                      worker_id);
+      gst_buffer_unref(rknn_buffer);
+      g_free(thread_data);
+      return NULL;
+    }
+    GstBuffer *rgb_buffer = g_async_queue_pop(filter->rgb_input_queue);
+  
+    GST_INFO_OBJECT(filter, "Thread %d recieved buffer %zu", worker_id,
+                    rknn_buffer->offset);
+    GstMemory *rknn_mem = gst_buffer_peek_memory(rknn_buffer, 0);
+    GstMapInfo rknn_map_info;
+    GstMemory *rgb_mem = gst_buffer_peek_memory(rgb_buffer, 0);
+
+    GstMapInfo rgb_map_info;
+    gst_memory_map(rknn_mem, &rknn_map_info, GST_MAP_READ);
+    gst_memory_map(rgb_mem, &rgb_map_info, GST_MAP_WRITE);
+    save_rgb_to_bmp("rgb_before.bmp", rgb_map_info.data, 816, 1080);
+
+    rknn_engine->inputs[0].buf = rknn_map_info.data;
+    rknn_engine->inputs[0].size = rknn_map_info.size;
+    // 执行推理
+    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start infer", worker_id,
+                     rknn_buffer->offset);
+    rknn_inference(rknn_engine, 1);
+
+    // 后处理
+    detect_result_group_t detect_result_group;
+    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start postprocess",
+                     worker_id, rknn_buffer->offset);
+    rknn_postprocess(rknn_engine, 0.6, 0.45, &detect_result_group);
+
+    // 可视化
+    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start visualize", worker_id,
+                     rknn_buffer->offset);
+
+    rknn_visualize(rknn_engine, rgb_map_info.data, &detect_result_group, 0,
+                   0.0);
+    GST_INFO_OBJECT(filter, "Thread %d offset %zu done", worker_id,
+                    rknn_buffer->offset);
+
+    save_rgb_to_bmp("rgb_after.bmp", rgb_map_info.data, 816, 1080);
+
+    gst_memory_unmap(rknn_mem, &rknn_map_info);
+    gst_memory_unmap(rgb_mem, &rgb_map_info);
+    gst_buffer_unref(rknn_buffer);
+    g_async_queue_push(filter->rgb_output_queue, rgb_buffer);
+  }
+}
+
+static gpointer push_thread(gpointer data) {
+  GstPluginRknn *filter = GST_PLUGIN_RKNN(data);
+  GST_DEBUG_OBJECT(filter, "Thread output start");
+  while (TRUE) {
+    // 从 rgb_output_queue 中取出 buffer
+    GstBuffer *rgb_buf = g_async_queue_pop(filter->rgb_output_queue);
+    GST_DEBUG_OBJECT(filter, "Thread output recieved buffer offset %zu",
+                     rgb_buf->offset);
+    // 检查是否是停止信号
+    if (gst_buffer_get_size(rgb_buf) == 0) {
+      GST_INFO_OBJECT(
+          filter, "Output collector thread received ending buffer, stopping");
+      gst_buffer_unref(rgb_buf);
+      return NULL;
+    }
+
+    // 检查 buffer 的 offset 是否等于 next_output_offset
+    if (rgb_buf->offset == filter->next_output_offset) {
+      GST_DEBUG_OBJECT(
+          filter,
+          "Buffer offset %zu matches next output offset, pushing directly",
+          rgb_buf->offset);
+      // 直接输出
+      gst_pad_push(filter->srcpad, rgb_buf);
+      filter->next_output_offset++;
+      GST_DEBUG_OBJECT(
+          filter, "Buffer offset %zu pushed, next output offset is now %zu",
+          rgb_buf->offset, filter->next_output_offset);
+
+      // 检查 out_of_order_buffers 中是否有可以按顺序输出的 buffer
+      GST_DEBUG_OBJECT(filter,
+                       "Checking out_of_order_buffers for sequential buffers");
+      while (filter->out_of_order_buffers != NULL) {
+        GList *first = g_list_first(filter->out_of_order_buffers);
+        GstBuffer *buf = (GstBuffer *)first->data;
+
+        if (buf->offset == filter->next_output_offset) {
+          GST_DEBUG_OBJECT(filter,
+                           "Found sequential buffer with offset %zu in "
+                           "out_of_order_buffers, pushing",
+                           buf->offset);
+          // 移除并输出
+          filter->out_of_order_buffers =
+              g_list_remove_link(filter->out_of_order_buffers, first);
+          g_list_free_1(first);
+          gst_pad_push(filter->srcpad, buf);
+          filter->next_output_offset++;
+          GST_DEBUG_OBJECT(filter,
+                           "Sequential buffer with offset %zu pushed, next "
+                           "output offset is now %zu",
+                           buf->offset, filter->next_output_offset);
+        } else {
+          // 如果第一个 buffer 都不是下一个应该输出的，那么后面的也不会是
+          GST_DEBUG_OBJECT(filter,
+                           "Next buffer in out_of_order_buffers (offset %zu) "
+                           "is not sequential (expected %zu), breaking",
+                           buf->offset, filter->next_output_offset);
+          break;
+        }
+      }
+    } else {
+      GST_DEBUG_OBJECT(filter,
+                       "Buffer offset %zu does not match next output offset "
+                       "%zu, storing in out_of_order_buffers",
+                       rgb_buf->offset, filter->next_output_offset);
+      // 将 buffer 存储在 out_of_order_buffers 中
+      filter->out_of_order_buffers = g_list_insert_sorted(
+          filter->out_of_order_buffers, rgb_buf, buffer_offset_compare);
+      GST_DEBUG_OBJECT(filter,
+                       "Buffer with offset %zu stored in out_of_order_buffers",
+                       rgb_buf->offset);
+    }
+  }
+
+  return NULL;
+}
+
+// 以下是 GStreamer Plugin的模板框架，没有实质逻辑
+
+enum { PROP_0, PROP_MODEL_PATH, PROP_LABEL_PATH, PROP_WORKERS };
 
 /* the capabilities of the inputs and outputs.
  *
  * describe the real formats here.
  */
-static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE("sink",
-    GST_PAD_SINK,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS("video/x-raw,"
-                    "format = (string) { " PLUGIN_RKNN_SUPPORT_FORMATS " } "));
+static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE(
+    "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
+    GST_STATIC_CAPS("video/x-raw, "
+                    "format = (string) { RGB, NV16, NV12 }, "));
 
-static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
-    GST_PAD_SRC,
-    GST_PAD_ALWAYS,
-    GST_STATIC_CAPS("video/x-raw,"
-                    "format = (string) { " PLUGIN_RKNN_SUPPORT_FORMATS " } "));
+static GstStaticPadTemplate src_factory =
+    GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS,
+                            GST_STATIC_CAPS("video/x-raw, "
+                                            "format = (string) { RGB } "));
 
 #define gst_plugin_rknn_parent_class parent_class
-/**
- * G_DEFINE_TYPE:
- * @TN: The name of the new type, in Camel case.
- * @t_n: The name of the new type, in lowercase, with words
- *  separated by `_`.
- * @T_P: The #GType of the parent type.
- */
 G_DEFINE_TYPE(GstPluginRknn, gst_plugin_rknn, GST_TYPE_ELEMENT);
 
-/**
- * GST_ELEMENT_REGISTER_DEFINE:
- * @e: The element name in lower case, with words separated by '_'.
- * Used to generate `gst_element_register_*(GstPlugin* plugin)`.
- * @e_n: The public name of the element
- * @r: The #GstRank of the element (higher rank means more importance when autoplugging, see #GstRank)
- * @t: The #GType of the element.
- */
 GST_ELEMENT_REGISTER_DEFINE(plugin_rknn, "rknn", GST_RANK_NONE,
-    GST_TYPE_PLUGIN_RKNN);
+                            GST_TYPE_PLUGIN_RKNN);
 
-static void gst_plugin_rknn_set_property(GObject* object,
-    guint prop_id, const GValue* value, GParamSpec* pspec);
-static void gst_plugin_rknn_get_property(GObject* object,
-    guint prop_id, GValue* value, GParamSpec* pspec);
-static GstStateChangeReturn gst_plugin_rknn_change_state(GstElement* element, 
-    GstStateChange transition);
+static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
+                                         const GValue *value,
+                                         GParamSpec *pspec);
+static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
+                                         GValue *value, GParamSpec *pspec);
+static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
+                                           GstEvent *event);
+static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
+                                           GstBuffer *buf);
 
-static gboolean gst_plugin_rknn_sink_event(GstPad* pad,
-    GstObject* parent, GstEvent* event);
-static gboolean gst_plugin_rknn_src_event(GstPad* pad,
-    GstObject* parent, GstEvent* event);
-static gboolean gst_plugin_rknn_sink_query(GstPad *pad, 
-    GstObject *parent, GstQuery *query);
-static GstFlowReturn gst_plugin_rknn_chain(GstPad* pad,
-    GstObject* parent, GstBuffer* buf);
+/* GstElement vmethod implementations with detailed logging */
 
 /* GObject vmethod implementations */
 
 /* initialize the plugin's class */
-static void
-gst_plugin_rknn_finalize(GObject* object)
-{
-    GstPluginRknn* filter = GST_PLUGIN_RKNN(object);
-    if (filter->task_data) {
-        filter->task_data->stop = TRUE;
-        // Use an empty buffer as sentinel instead of NULL
-        g_async_queue_push(filter->queue, gst_buffer_new());
-        g_thread_join(filter->task_thread);
-        g_free(filter->task_data);
-    }
+static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
+  GST_DEBUG("Entering gst_plugin_rknn_class_init");
 
-    if (filter->sink_caps)
-        gst_caps_unref(filter->sink_caps);
-    if (filter->src_caps)
-        gst_caps_unref(filter->src_caps);
-    G_OBJECT_CLASS(gst_plugin_rknn_parent_class)->finalize(object);
+  GObjectClass *gobject_class;
+  GstElementClass *gstelement_class;
 
-    for (int i = 0; i < MAX_DMABUF_INSTANCES; ++i) {
-        if (filter->cached_dmabuf_ptr[i])
-            dmabuf_munmap(filter->cached_dmabuf_ptr[i], filter->cached_dmabuf_size[i]);
-        if (filter->cached_dmabuf_fd[i] >= 0)
-            close(filter->cached_dmabuf_fd[i]);
-        if (filter->cached_allocator[i])
-            gst_object_unref(filter->cached_allocator[i]);
-        if (filter->cached_dmabuf_mem[i])
-            gst_memory_unref(filter->cached_dmabuf_mem[i]);
-    }
-    if (filter->dma_heap_fd >= 0) {
-        dmabuf_heap_close(filter->dma_heap_fd);
-        filter->dma_heap_fd = -1;
-    }
+  gobject_class = (GObjectClass *)klass;
+  gstelement_class = (GstElementClass *)klass;
 
-    if (filter->rknn_process.model_path)
-        g_free(filter->rknn_process.model_path);
+  GST_DEBUG("Class pointers assigned");
 
-    rknn_release(&filter->rknn_process);
+  gobject_class->set_property = gst_plugin_rknn_set_property;
+  gobject_class->get_property = gst_plugin_rknn_get_property;
+
+  GST_DEBUG("Property setters/getters assigned");
+
+  g_object_class_install_property(
+      gobject_class, PROP_MODEL_PATH,
+      g_param_spec_string("model-path", "Model Path",
+                          "Path to the RKNN model file", NULL,
+                          G_PARAM_READWRITE));
+
+  GST_DEBUG("Model path property installed");
+
+  g_object_class_install_property(
+      gobject_class, PROP_LABEL_PATH,
+      g_param_spec_string("label-path", "Label Path", "Path to the label file",
+                          NULL, G_PARAM_READWRITE));
+
+  g_object_class_install_property(
+      gobject_class, PROP_WORKERS,
+      g_param_spec_int("workers", "Workers",
+                       "Number of workers for buffer pool", 1, 10,
+                       DEFAULT_WORKERS, G_PARAM_READWRITE));
+
+  GST_DEBUG("Label path property installed");
+
+  gst_element_class_set_details_simple(
+      gstelement_class, "Plugin", "FIXME:Generic",
+      "FIXME:Generic Template Element", "AUTHOR_NAME AUTHOR_EMAIL");
+
+  GST_DEBUG("Element details set");
+
+  gst_element_class_add_pad_template(gstelement_class,
+                                     gst_static_pad_template_get(&src_factory));
+  gst_element_class_add_pad_template(
+      gstelement_class, gst_static_pad_template_get(&sink_factory));
+
+  GST_DEBUG("Pad templates added");
+  GST_DEBUG("Exiting gst_plugin_rknn_class_init");
+
+  // Test current dmabuf buffer pool
 }
-
-static void
-gst_plugin_rknn_class_init(GstPluginRknnClass* klass)
-{
-    GObjectClass* gobject_class;
-    GstElementClass* gstelement_class;
-
-    gobject_class = (GObjectClass*)klass;
-    gstelement_class = (GstElementClass*)klass;
-
-    gobject_class->set_property = gst_plugin_rknn_set_property;
-    gobject_class->get_property = gst_plugin_rknn_get_property;
-    gobject_class->finalize = (GObjectFinalizeFunc)gst_plugin_rknn_finalize;
-    
-    gstelement_class->change_state = GST_DEBUG_FUNCPTR(gst_plugin_rknn_change_state);
-
-    g_object_class_install_property(gobject_class, PROP_SILENT,
-        g_param_spec_boolean("silent", "Silent", "Produce verbose output ?",
-            TRUE, G_PARAM_READWRITE));
-    g_object_class_install_property(gobject_class, PROP_BYPASS,
-        g_param_spec_boolean("bypass", "Bypass",
-            "Bypass the filter and just pass through the data",
-            FALSE, G_PARAM_READWRITE));
-    g_object_class_install_property(gobject_class, PROP_MODEL_PATH,
-        g_param_spec_string("model-path", "Model Path",
-            "Path to the RKNN model file",
-            NULL, G_PARAM_READWRITE));
-    g_object_class_install_property(gobject_class, PROP_LABEL_PATH, // Add this block
-        g_param_spec_string("label-path", "Label Path",
-            "Path to the label file",
-            NULL, G_PARAM_READWRITE));
-    g_object_class_install_property(gobject_class, PROP_SHOW_FPS,
-        g_param_spec_boolean("show-fps", "Show FPS",
-            "Display FPS on output frames",
-            FALSE, G_PARAM_READWRITE));
-    g_object_class_install_property(gobject_class, PROP_FRAME_SKIP,
-        g_param_spec_int("frame-skip", "Frame Skip",
-            "Number of frames to skip between inferences (0=no skip)",
-            0, G_MAXINT, 0, G_PARAM_READWRITE));
-    gst_element_class_set_details_simple(gstelement_class,
-        "Rknn Plugin",
-        "FIXME: Rknn Plugin classification",
-        "FIXME: Rknn Plugin description", "haydenee <lth0320@163.com>");
-
-    gst_element_class_add_pad_template(gstelement_class,
-        gst_static_pad_template_get(&src_factory));
-    gst_element_class_add_pad_template(gstelement_class,
-        gst_static_pad_template_get(&sink_factory));
-}
-
-static gpointer rknn_task_func(gpointer data);
 
 /* initialize the new element
  * instantiate pads and add them to element
  * set pad callback functions
  * initialize instance structure
  */
-static void
-gst_plugin_rknn_init(GstPluginRknn* filter)
-{
-    filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
-    gst_pad_set_event_function(filter->sinkpad,
-        GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_event));
-    gst_pad_set_query_function(filter->sinkpad,
-        GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_query));
-    gst_pad_set_chain_function(filter->sinkpad,
-        GST_DEBUG_FUNCPTR(gst_plugin_rknn_chain));
-    gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad);
 
-    filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
-    gst_pad_set_event_function(filter->srcpad,
-        GST_DEBUG_FUNCPTR(gst_plugin_rknn_src_event));
-    gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
+static void gst_plugin_rknn_init(GstPluginRknn *filter) {
+  GST_LOG_OBJECT(filter, "Initializing GstPluginRknn element");
 
-    filter->silent = FALSE;
-    filter->bypass = FALSE;
-    filter->sink_caps = NULL;
-    filter->src_caps = NULL;
+  // Initialize all pointers to NULL first
+  filter->sinkpad = NULL;
+  filter->srcpad = NULL;
+  filter->model_path = NULL;
+  filter->label_path = NULL;
+  filter->sink_caps = NULL;
+  filter->src_caps = NULL;
+  filter->rknn_engines = NULL;
+  filter->workers = DEFAULT_WORKERS; // 使用默认的 workers 数量
+  filter->rknn_width = 0;
+  filter->rknn_height = 0;
 
-    filter->dma_heap_fd = dmabuf_heap_open();
-    if (filter->dma_heap_fd < 0) {
-        GST_ERROR_OBJECT(filter, "Failed to open DMA-BUF heap");
-    } else {
-        GST_INFO_OBJECT(filter, "Opened DMA-BUF heap, fd = %d", filter->dma_heap_fd);
-    }
-    filter->src_buffer_index = 0;
-    filter->rknn_model_loaded = FALSE;
+  // 初始化输入格式信息
+  filter->sink_format = GST_VIDEO_FORMAT_UNKNOWN;
+  filter->sink_width = 0;
+  filter->sink_height = 0;
+  filter->sink_format_is_rgb = FALSE;
+  filter->sink_need_align = FALSE;
 
-    for (int i = 0; i < MAX_DMABUF_INSTANCES; ++i) {
-        filter->cached_dmabuf_fd[i] = -1;
-        filter->cached_dmabuf_ptr[i] = NULL;
-        filter->cached_dmabuf_size[i] = 0;
-        filter->cached_allocator[i] = NULL;
-        filter->cached_dmabuf_mem[i] = NULL;
-    }
+  GST_DEBUG_OBJECT(filter, "Pointers initialized to NULL");
 
-    filter->show_fps = FALSE;
-    filter->fps_start_time = 0;
-    filter->fps_frame_count = 0;
-    filter->current_fps = 0.0;
-    filter->fps_update_interval = 1000000; // 1 second in microseconds
+  // Create sink pad
+  filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
+  GST_DEBUG_OBJECT(filter, "Sink pad creation attempted, result: %p",
+                   filter->sinkpad);
 
-    // 初始化跳帧推理相关变量
-    filter->frame_skip = 0; // 默认不跳帧
-    filter->frame_counter = 0; // 从0开始计数
-    filter->need_inference = TRUE; // 第一帧默认做推理
+  if (!filter->sinkpad) {
+    GST_ERROR_OBJECT(filter, "Failed to create sink pad");
+    return;
+  }
 
-    // for rknn task
-    filter->queue = g_async_queue_new();
-    GST_LOG_OBJECT(filter, "gst_plugin_rknn_init");
-    filter->task_data = NULL;
-    filter->task_thread = NULL;
-    }
+  gst_pad_set_event_function(filter->sinkpad,
+                             GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_event));
+  GST_DEBUG_OBJECT(filter, "Sink pad event function set");
+  gst_pad_set_chain_function(filter->sinkpad,
+                             GST_DEBUG_FUNCPTR(gst_plugin_rknn_chain));
+  GST_DEBUG_OBJECT(filter, "Sink pad chain function set");
 
-static GstStateChangeReturn
-gst_plugin_rknn_change_state(GstElement* element, GstStateChange transition)
-{
-    GstStateChangeReturn ret;
-    GstPluginRknn* filter = GST_PLUGIN_RKNN(element);
+  if (!gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad)) {
+    GST_ERROR_OBJECT(filter, "Failed to add sink pad to element");
+    gst_object_unref(filter->sinkpad);
+    filter->sinkpad = NULL;
+    return;
+  }
 
-    GST_DEBUG_OBJECT(filter, "Handling state change from %s to %s",
-        gst_element_state_get_name(GST_STATE_TRANSITION_CURRENT(transition)),
-        gst_element_state_get_name(GST_STATE_TRANSITION_NEXT(transition)));
+  GST_DEBUG_OBJECT(filter, "Sink pad added to element");
 
-    switch (transition) {
-        case GST_STATE_CHANGE_NULL_TO_READY:
-            GST_DEBUG_OBJECT(filter, "NULL to READY: Initializing basic resources");
-            break;
-            
-        case GST_STATE_CHANGE_READY_TO_PAUSED:
-            GST_DEBUG_OBJECT(filter, "READY to PAUSED: Loading model and starting thread");
-            
-            // Load RKNN model if path is provided
-            if (filter->rknn_process.model_path && !filter->rknn_model_loaded) {
-                if (rknn_prepare(&filter->rknn_process) == 0) {
-                    filter->rknn_model_loaded = TRUE;
-                    GST_INFO_OBJECT(filter, "Successfully loaded RKNN model");
-                } else {
-                    GST_ERROR_OBJECT(filter, "Failed to load RKNN model");
-                    return GST_STATE_CHANGE_FAILURE;
-                }
-            }
-            
-            // Create and start the inference thread
-            if (!filter->task_thread) {
-                filter->task_data = g_new0(RknnTaskData, 1);
-                if (!filter->task_data) {
-                    GST_ERROR_OBJECT(filter, "Failed to allocate task data");
-                    return GST_STATE_CHANGE_FAILURE;
-                }
-                
-                filter->task_data->filter = filter;
-                filter->task_data->stop = FALSE;
-                
-                filter->task_thread = g_thread_new("rknn_task_thread",
-                    rknn_task_func, filter->task_data);
-                if (!filter->task_thread) {
-                    GST_ERROR_OBJECT(filter, "Failed to create inference thread");
-                    g_free(filter->task_data);
-                    filter->task_data = NULL;
-                    return GST_STATE_CHANGE_FAILURE;
-                }
-                
-                GST_INFO_OBJECT(filter, "Successfully started inference thread");
-            }
-            break;
-            
-        case GST_STATE_CHANGE_PAUSED_TO_READY:
-            GST_DEBUG_OBJECT(filter, "PAUSED to READY: Stopping thread and unloading model");
-            
-            // Stop the inference thread
-            if (filter->task_thread) {
-                filter->task_data->stop = TRUE;
-                // Use an empty buffer as sentinel to wake up the thread
-                g_async_queue_push(filter->queue, gst_buffer_new());
-                g_thread_join(filter->task_thread);
-                g_free(filter->task_data);
-                filter->task_data = NULL;
-                filter->task_thread = NULL;
-                GST_INFO_OBJECT(filter, "Successfully stopped inference thread");
-            }
-            
-            // Unload RKNN model
-            if (filter->rknn_model_loaded) {
-                rknn_release(&filter->rknn_process);
-                filter->rknn_model_loaded = FALSE;
-                GST_INFO_OBJECT(filter, "Successfully unloaded RKNN model");
-            }
-            break;
-            
-        case GST_STATE_CHANGE_READY_TO_NULL:
-            GST_DEBUG_OBJECT(filter, "READY to NULL: Cleaning up resources");
-            // Ensure thread is stopped and model is unloaded
-            if (filter->task_thread) {
-                filter->task_data->stop = TRUE;
-                g_async_queue_push(filter->queue, gst_buffer_new());
-                g_thread_join(filter->task_thread);
-                g_free(filter->task_data);
-                filter->task_data = NULL;
-                filter->task_thread = NULL;
-            }
-            
-            if (filter->rknn_model_loaded) {
-                rknn_release(&filter->rknn_process);
-                filter->rknn_model_loaded = FALSE;
-            }
-            break;
-            
-        default:
-            break;
-    }
+  // Create source pad
+  filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
+  GST_DEBUG_OBJECT(filter, "Source pad creation attempted, result: %p",
+                   filter->srcpad);
 
-    ret = GST_ELEMENT_CLASS(parent_class)->change_state(element, transition);
-    
-    return ret;
+  if (!filter->srcpad) {
+    GST_ERROR_OBJECT(filter, "Failed to create src pad");
+    return;
+  }
+
+  if (!gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad)) {
+    GST_ERROR_OBJECT(filter, "Failed to add src pad to element");
+    gst_object_unref(filter->srcpad);
+    filter->srcpad = NULL;
+    return;
+  }
+
+  GST_DEBUG_OBJECT(filter, "Source pad added to element");
+
+  // Initialize queues
+  filter->rknn_input_queue = g_async_queue_new();
+  filter->rgb_input_queue = g_async_queue_new();
+  filter->rknn_output_queue = g_async_queue_new();
+  filter->rgb_output_queue = g_async_queue_new();
+  filter->next_output_offset = 0;
+  filter->out_of_order_buffers = NULL;
+  filter->output_collector_thread = NULL;
+
+  GST_LOG_OBJECT(filter, "GstPluginRknn element initialized successfully");
 }
 
-static void
-gst_plugin_rknn_set_property(GObject* object, guint prop_id,
-    const GValue* value, GParamSpec* pspec)
-{
-    GstPluginRknn* filter = GST_PLUGIN_RKNN(object);
+static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
+                                         const GValue *value,
+                                         GParamSpec *pspec) {
+  GstPluginRknn *filter = GST_PLUGIN_RKNN(object);
 
-    switch (prop_id) {
-    case PROP_SILENT:
-        filter->silent = g_value_get_boolean(value);
-        break;
-    case PROP_BYPASS:
-        filter->bypass = g_value_get_boolean(value);
-        break;
-    case PROP_MODEL_PATH:
-        if (filter->rknn_process.model_path)
-            g_free(filter->rknn_process.model_path);
-        filter->rknn_process.model_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(filter, "Set RKNN model path to: %s",
-            filter->rknn_process.model_path);
-        break;
-    case PROP_LABEL_PATH:
-        if (filter->rknn_process.label_path)
-            g_free(filter->rknn_process.label_path);
-        filter->rknn_process.label_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(filter, "Set RKNN label path to: %s",
-            filter->rknn_process.label_path);
-        break;
-    case PROP_SHOW_FPS:
-        filter->show_fps = g_value_get_boolean(value);
-        GST_INFO_OBJECT(filter, "Set show FPS to: %s",
-            filter->show_fps ? "TRUE" : "FALSE");
-        break;
-    case PROP_FRAME_SKIP:
-        filter->frame_skip = g_value_get_int(value);
-        GST_INFO_OBJECT(filter, "Set frame skip to: %d",
-            filter->frame_skip);
-        break;
-    default:
-        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-        break;
-    }
+  GST_DEBUG_OBJECT(filter, "set_property called with prop_id %d", prop_id);
+
+  switch (prop_id) {
+  case PROP_MODEL_PATH:
+    GST_DEBUG_OBJECT(filter, "Setting model_path property");
+    if (filter->model_path)
+      g_free(filter->model_path);
+    filter->model_path = g_value_dup_string(value);
+    GST_DEBUG_OBJECT(filter, "model_path set to %s", filter->model_path);
+    break;
+  case PROP_LABEL_PATH:
+    GST_DEBUG_OBJECT(filter, "Setting label_path property");
+    if (filter->label_path)
+      g_free(filter->label_path);
+    filter->label_path = g_value_dup_string(value);
+    GST_DEBUG_OBJECT(filter, "label_path set to %s", filter->label_path);
+    break;
+  case PROP_WORKERS:
+    GST_DEBUG_OBJECT(filter, "Setting workers property");
+    filter->workers = g_value_get_int(value);
+    GST_DEBUG_OBJECT(filter, "workers set to %d", filter->workers);
+    break;
+  default:
+    GST_WARNING_OBJECT(filter, "Invalid property ID: %d", prop_id);
+    G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+    break;
+  }
 }
 
-static void
-gst_plugin_rknn_get_property(GObject* object, guint prop_id,
-    GValue* value, GParamSpec* pspec)
-{
-    GstPluginRknn* filter = GST_PLUGIN_RKNN(object);
+static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
+                                         GValue *value, GParamSpec *pspec) {
+  GstPluginRknn *filter = GST_PLUGIN_RKNN(object);
 
-    switch (prop_id) {
-    case PROP_SILENT:
-        g_value_set_boolean(value, filter->silent);
-        break;
-    case PROP_BYPASS:
-        g_value_set_boolean(value, filter->bypass);
-        break;
-    case PROP_MODEL_PATH:
-        g_value_set_string(value, (const gchar*)filter->rknn_process.model_path);
-        break;
-    case PROP_LABEL_PATH:
-        g_value_set_string(value, (const gchar*)filter->rknn_process.label_path);
-        break;
-    case PROP_SHOW_FPS:
-        g_value_set_boolean(value, filter->show_fps);
-        break;
-    case PROP_FRAME_SKIP:
-        g_value_set_int(value, filter->frame_skip);
-        break;
-    default:
-        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-        break;
-    }
+  GST_DEBUG_OBJECT(filter, "get_property called with prop_id %d", prop_id);
+
+  switch (prop_id) {
+  case PROP_MODEL_PATH:
+    GST_DEBUG_OBJECT(filter, "Getting model_path property: %s",
+                     filter->model_path);
+    g_value_set_string(value, filter->model_path);
+    break;
+  case PROP_LABEL_PATH:
+    GST_DEBUG_OBJECT(filter, "Getting label_path property: %s",
+                     filter->label_path);
+    g_value_set_string(value, filter->label_path);
+    break;
+  case PROP_WORKERS:
+    GST_DEBUG_OBJECT(filter, "Getting workers property: %d", filter->workers);
+    g_value_set_int(value, filter->workers);
+    break;
+  default:
+    GST_WARNING_OBJECT(filter, "Invalid property ID: %d", prop_id);
+    G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+    break;
+  }
 }
 
 /* GstElement vmethod implementations */
 
-/* Helper function to ensure RGB caps are set on the source pad */
-static gboolean
-gst_plugin_rknn_ensure_rgb_caps(GstPluginRknn* filter)
-{
-    if (!filter->aligned_width || !filter->aligned_height) {
-        GST_WARNING_OBJECT(filter, "Sink dimensions not yet known, can't set RGB caps");
-        return FALSE;
-    }
+/* this function handles sink events */
+static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
+                                           GstEvent *event) {
+  GstPluginRknn *filter;
+  gboolean ret = FALSE;
 
+  filter = GST_PLUGIN_RKNN(parent);
+
+  GST_DEBUG_OBJECT(filter, "Received %s event: %" GST_PTR_FORMAT,
+                   GST_EVENT_TYPE_NAME(event), event);
+
+  switch (GST_EVENT_TYPE(event)) {
+  case GST_EVENT_CAPS: {
+    GstCaps *caps;
+
+    gst_event_parse_caps(event, &caps);
+    /* Store the caps */
+    if (filter->sink_caps) {
+      if (gst_caps_is_equal(filter->sink_caps, caps)) {
+        GST_DEBUG_OBJECT(filter, "Recieved same caps event, ignore");
+        ret = gst_pad_event_default(pad, parent, event);
+        break;
+      } else {
+        free_rknn_resources(filter);
+        gst_caps_unref(filter->sink_caps);
+      }
+    }
+    filter->sink_caps = gst_caps_copy(caps);
+
+    /* 解析并存储输入格式信息 */
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+    const gchar *format_str = gst_structure_get_string(structure, "format");
+    gst_structure_get_int(structure, "width", &filter->sink_width);
+    gst_structure_get_int(structure, "height", &filter->sink_height);
+    // NV16/NV12 转 RGB 需要宽度 16 对齐，高度 2 对齐
+    filter->aligned_width = ALIGN_UP(filter->sink_width, 16);
+    filter->aligned_height = ALIGN_UP(filter->sink_height, 2);
+    filter->sink_need_align = (filter->aligned_width != filter->sink_width) ||
+                              (filter->aligned_height != filter->sink_height);
+    filter->sink_format = gst_video_format_from_string(format_str);
+    filter->sink_format_is_rgb = (filter->sink_format == GST_VIDEO_FORMAT_RGB);
+
+    GST_DEBUG_OBJECT(
+        filter,
+        "Sink caps parsed - format: %s, width: %d, height: %d, is_rgb: %s",
+        format_str, filter->sink_width, filter->sink_height,
+        filter->sink_format_is_rgb ? "TRUE" : "FALSE");
+    // 向下游传递 caps，除了格式一定是 RGB 外与下游一样
     GstCaps* rgb_caps = gst_caps_new_simple(
         "video/x-raw",
         "format", G_TYPE_STRING, "RGB",
@@ -503,9 +857,8 @@ gst_plugin_rknn_ensure_rgb_caps(GstPluginRknn* filter)
         "height", G_TYPE_INT, filter->aligned_height,
         NULL);
 
-    gboolean ret = gst_pad_set_caps(filter->srcpad, rgb_caps);
-
-    if (ret) {
+    int ret = gst_pad_set_caps(filter->srcpad, rgb_caps);
+        if (ret) {
         GST_INFO_OBJECT(filter, "Successfully set RGB caps: %" GST_PTR_FORMAT, rgb_caps);
         if (filter->src_caps)
             gst_caps_unref(filter->src_caps);
@@ -515,483 +868,68 @@ gst_plugin_rknn_ensure_rgb_caps(GstPluginRknn* filter)
         gst_caps_unref(rgb_caps);
     }
 
-    return ret;
+    // caps 协商完成后可以分配资源了。
+    ret = allocate_rknn_resources(filter);
+    /* and forward */
+    ret &= gst_pad_event_default(pad, parent, event);
+    break;
+  }
+  case GST_EVENT_EOS: {
+    free_rknn_resources(filter);
+    ret = gst_pad_event_default(pad, parent, event);
+    break;
+  }
+  default:
+    ret = gst_pad_event_default(pad, parent, event);
+    break;
+  }
+  return ret;
 }
 
-/* this function handles sink events */
-static gboolean
-gst_plugin_rknn_sink_event(GstPad* pad, GstObject* parent,
-    GstEvent* event)
-{
-    GstPluginRknn* filter;
-    gboolean ret;
-
-    filter = GST_PLUGIN_RKNN(parent);
-
-    GST_LOG_OBJECT(filter, "Received %s event: %" GST_PTR_FORMAT,
-        GST_EVENT_TYPE_NAME(event), event);
-
-    switch (GST_EVENT_TYPE(event)) {
-    case GST_EVENT_CAPS: {
-        GstCaps* caps;
-
-        gst_event_parse_caps(event, &caps);
-        /* do something with the caps */
-
-        if (filter->sink_caps)
-            gst_caps_unref(filter->sink_caps);
-        filter->sink_caps = gst_caps_copy(caps);
-        GST_INFO_OBJECT(filter, "Negotiated sink caps: %" GST_PTR_FORMAT, filter->sink_caps);
-        if (gst_video_info_from_caps(&filter->sink_info, filter->sink_caps)) {
-            filter->sink_width = GST_VIDEO_INFO_WIDTH(&filter->sink_info);
-            filter->sink_height = GST_VIDEO_INFO_HEIGHT(&filter->sink_info);
-            filter->sink_format = GST_VIDEO_INFO_FORMAT(&filter->sink_info);
-            filter->sink_rga_format = gst_to_rga_format(filter->sink_format);
-
-            // 立即计算对齐后的尺寸
-            filter->aligned_width = ALIGN_UP(filter->sink_width, 16);
-            filter->aligned_height = ALIGN_UP(filter->sink_height, 16);
-
-            GST_INFO_OBJECT(filter, "Sink pad video info: width=%d, height=%d, format=%s, aligned: %dx%d",
-                filter->sink_width, filter->sink_height,
-                gst_video_format_to_string(filter->sink_format),
-                filter->aligned_width, filter->aligned_height);
-
-            if (!gst_plugin_rknn_ensure_rgb_caps(filter)) {
-                GST_ERROR_OBJECT(filter, "Failed to set RGB caps after sink caps negotiation");
-                return FALSE;
-            }
-        } else {
-            GST_ERROR_OBJECT(filter, "Failed to parse video info from sink caps");
-        }
-
-        /* and forward */
-        ret = gst_pad_event_default(pad, parent, event);
-        break;
-    }
-    default:
-        ret = gst_pad_event_default(pad, parent, event);
-        break;
-    }
-    return ret;
-}
-
-/* 处理 sink query 协商，强制上游使用 DMA-buf*/
-static gboolean
-gst_plugin_rknn_sink_query(GstPad *pad,
-                           GstObject *parent,
-                           GstQuery *query)
-{
-
-    return gst_pad_query_default(pad, parent, query);
-}
-
-
-static gboolean
-gst_plugin_rknn_src_event(GstPad* pad, GstObject* parent, GstEvent* event)
-{
-    GstPluginRknn* filter = GST_PLUGIN_RKNN(parent);
-    gboolean ret;
-    GST_LOG_OBJECT(filter, "Received %s event: %" GST_PTR_FORMAT,
-        GST_EVENT_TYPE_NAME(event), event);
-    switch (GST_EVENT_TYPE(event)) {
-    case GST_EVENT_CAPS: {
-        GstCaps* caps;
-        gst_event_parse_caps(event, &caps);
-
-        if (filter->src_caps)
-            gst_caps_unref(filter->src_caps);
-        filter->src_caps = gst_caps_copy(caps);
-
-        GST_INFO_OBJECT(filter, "Src pad negotiated caps: %" GST_PTR_FORMAT, filter->src_caps);
-
-        ret = gst_pad_event_default(pad, parent, event);
-        break;
-    }
-    default:
-        ret = gst_pad_event_default(pad, parent, event);
-        break;
-    }
-    return ret;
-}
 /* chain function
  * this function does the actual processing
  */
-static GstFlowReturn
-gst_plugin_rknn_chain(GstPad* pad, GstObject* parent, GstBuffer* buf)
-{
-    // passed in buf already has a ref count of 1. If we pass out a buffer, it also needs a ref count of 1.
-    GstPluginRknn* filter;
-    GstMemory* mem = gst_buffer_peek_memory(buf, 0);
-    gboolean is_dma = gst_is_dmabuf_memory(mem);
-    filter = GST_PLUGIN_RKNN(parent);
-    GST_DEBUG_OBJECT(filter, "New buf arrived. is_dma: %d", is_dma);
+static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
+                                           GstBuffer *buf) {
+  GstPluginRknn *filter;
 
-    g_async_queue_push(filter->queue, gst_buffer_ref(buf));
+  filter = GST_PLUGIN_RKNN(parent);
 
-    // Drop the oldest buffer if the queue is too long
-    if (g_async_queue_length(filter->queue) > MAX_QUEUE_LENGTH) {
-        GstBuffer* old_buf = g_async_queue_try_pop(filter->queue);
-        if (old_buf) {
-            // This buffer is not going to be passed, so need to unref twice
-            gst_buffer_unref(old_buf);
-            gst_buffer_unref(old_buf);
-        }
+  /* Log buffer information using the new utility function */
 
-        if (g_get_monotonic_time() - filter->last_buffer_full_log_time > 1000000) {
-            GST_WARNING_OBJECT(filter, "Queue full, dropping oldest buffer. Queue length: %d",
-                g_async_queue_length(filter->queue));
-            filter->last_buffer_full_log_time = g_get_monotonic_time();
-        }
-    }
+  GST_DEBUG_OBJECT(filter,
+                   "Buffer received, size: %lu dts %zu pts %zu offset %zu",
+                   gst_buffer_get_size(buf), buf->dts, buf->pts, buf->offset);
 
-    /* just push out the incoming buffer without touching it */
-    return GST_FLOW_OK;
-}
+  // 执行预处理
+  if (!preprocess_buffer(filter, buf)) {
+    GST_WARNING_OBJECT(filter, "Failed to preprocess buffer");
+  }
 
-// Add FPS calculation function
-static void calculate_fps(GstPluginRknn* filter)
-{
-    gint64 current_time = g_get_monotonic_time();
-
-    if (filter->fps_start_time == 0) {
-        filter->fps_start_time = current_time;
-        filter->fps_frame_count = 0;
-    }
-
-    filter->fps_frame_count++;
-
-    gint64 elapsed = current_time - filter->fps_start_time;
-    if (elapsed >= filter->fps_update_interval) {
-        filter->current_fps = (gdouble)filter->fps_frame_count * 1000000.0 / elapsed;
-        filter->fps_start_time = current_time;
-        filter->fps_frame_count = 0;
-    }
-}
-gboolean prepare_dmabuf_memory(GstPluginRknn* filter, int index, gsize mem_size, GstMemory** mem)
-{
-    if (index < 0 || index >= MAX_DMABUF_INSTANCES)
-        return FALSE;
-
-    // 如果已分配且大小一致，直接复用
-    if (filter->cached_dmabuf_fd[index] >= 0 && filter->cached_dmabuf_size[index] == mem_size && filter->cached_dmabuf_mem[index]) {
-        *mem = filter->cached_dmabuf_mem[index];
-        if (!gst_memory_is_writable(*mem)) {
-            GST_ERROR_OBJECT(filter, "DMABUF memory fd %d is not writable",
-                filter->cached_dmabuf_fd[index]);
-        }
-        return TRUE;
-    }
-
-    // 释放旧的
-    if (filter->cached_dmabuf_ptr[index])
-        dmabuf_munmap(filter->cached_dmabuf_ptr[index], filter->cached_dmabuf_size[index]);
-    if (filter->cached_dmabuf_fd[index] >= 0)
-        close(filter->cached_dmabuf_fd[index]);
-    if (filter->cached_allocator[index])
-        gst_object_unref(filter->cached_allocator[index]);
-    if (filter->cached_dmabuf_mem[index])
-        gst_memory_unref(filter->cached_dmabuf_mem[index]);
-
-    // 分配新的
-    filter->cached_dmabuf_fd[index] = dmabuf_heap_alloc(filter->dma_heap_fd, NULL, mem_size);
-    if (filter->cached_dmabuf_fd[index] < 0) {
-        GST_ERROR_OBJECT(filter, "Failed to allocate DMABUF fd from heap fd %d, size %zu",
-            filter->dma_heap_fd, mem_size);
-        return FALSE;
-    }
-    GST_DEBUG_OBJECT(filter, "Allocated DMABUF fd %d for index %d, size %zu", filter->cached_dmabuf_fd[index], index, mem_size);
-    filter->cached_dmabuf_ptr[index] = dmabuf_mmap(filter->cached_dmabuf_fd[index], mem_size);
-    if (!filter->cached_dmabuf_ptr[index]) {
-        close(filter->cached_dmabuf_fd[index]);
-        filter->cached_dmabuf_fd[index] = -1;
-        GST_ERROR_OBJECT(filter, "Failed to mmap DMABUF fd %d, size %zu", filter->cached_dmabuf_fd[index], mem_size);
-        return FALSE;
-    }
-    filter->cached_allocator[index] = gst_dmabuf_allocator_new();
-    if (!filter->cached_allocator[index]) {
-        dmabuf_munmap(filter->cached_dmabuf_ptr[index], mem_size);
-        close(filter->cached_dmabuf_fd[index]);
-        filter->cached_dmabuf_fd[index] = -1;
-        GST_ERROR_OBJECT(filter, "Failed to create DMABUF allocator");
-        return FALSE;
-    }
-    filter->cached_dmabuf_mem[index] = gst_dmabuf_allocator_alloc(filter->cached_allocator[index], filter->cached_dmabuf_fd[index], mem_size);
-    if (!filter->cached_dmabuf_mem[index]) {
-        gst_object_unref(filter->cached_allocator[index]);
-        filter->cached_allocator[index] = NULL;
-        dmabuf_munmap(filter->cached_dmabuf_ptr[index], mem_size);
-        close(filter->cached_dmabuf_fd[index]);
-        filter->cached_dmabuf_fd[index] = -1;
-        GST_ERROR_OBJECT(filter, "Failed to allocate DMABUF memory from fd %d, size %zu",
-            filter->cached_dmabuf_fd[index], mem_size);
-        return FALSE;
-    }
-    filter->cached_dmabuf_size[index] = mem_size;
-    *mem = filter->cached_dmabuf_mem[index];
-    return TRUE;
-}
-static gpointer rknn_task_func(gpointer data)
-{
-    int ret = GST_FLOW_OK;
-    RknnTaskData* task_data = (RknnTaskData*)data;
-    GstPluginRknn* filter = task_data->filter;
-    GST_INFO_OBJECT(filter, "Starting rknn task thread");
-    while (!task_data->stop) {
-
-        GstBuffer* buf = g_async_queue_pop(filter->queue);
-        gint64 current_time = g_get_monotonic_time();
-
-        if (task_data->stop) {
-            GST_INFO_OBJECT(filter, "Stopping rknn task thread");
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            break;
-        }
-
-        if (!buf) {
-            GST_WARNING_OBJECT(filter, "Received NULL buffer");
-            continue;
-        }
-
-        if (filter->bypass) {
-            /* if we are in bypass mode, just push the buffer out */
-            GST_LOG_OBJECT(filter, "Bypassing the filter, pushing buffer out");
-            gst_pad_push(filter->srcpad, buf);
-            if (ret != GST_FLOW_OK) {
-                GST_WARNING_OBJECT(filter, "Failed to push buffer, ret = %d", ret);
-            }
-            gst_buffer_unref(buf);
-            continue;
-        }
-
-        // start of processing
-
-        // 处理跳帧推理逻辑
-        filter->need_inference = FALSE;
-        if (filter->frame_skip == 0 || filter->frame_counter % (filter->frame_skip + 1) == 0) {
-            filter->need_inference = TRUE;
-        }
-
-        // 更新帧计数器
-        filter->frame_counter++;
-        if (filter->frame_counter > 1000000) { // 避免溢出
-            filter->frame_counter = 0;
-        }
-
-        // Normalize to DMABUF memory
-        GstMemory* mem_in = gst_buffer_peek_memory(buf, 0);
-        GstMemory* mem_in_dmabuf = NULL;
-        gsize mem_size = 0;
-        if (!mem_in) {
-            GST_ERROR_OBJECT(filter, "Failed to get memory from buffer");
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            continue;
-        }
-        if (gst_is_dmabuf_memory(mem_in)) {
-            GST_DEBUG_OBJECT(filter, "Processing DMABUF memory");
-            // no conversion needed
-            mem_in_dmabuf = mem_in;
-            mem_size = gst_memory_get_sizes(mem_in, NULL, NULL);
-        } else {
-            GST_DEBUG_OBJECT(filter, "Processing non-DMABUF memory");
-            // will convert to DMABUF memory
-            mem_size = gst_memory_get_sizes(mem_in, NULL, NULL);
-            if (!prepare_dmabuf_memory(filter, 0, mem_size, &mem_in_dmabuf)) {
-                GST_ERROR_OBJECT(filter, "Failed to prepare DMABUF memory");
-                gst_buffer_unref(buf);
-                gst_buffer_unref(buf);
-                continue;
-            }
-            if (!mem_in_dmabuf) {
-                GST_ERROR_OBJECT(filter, "Failed to get DMABUF memory");
-                gst_buffer_unref(buf);
-                gst_buffer_unref(buf);
-                continue;
-            }
-            GstMapInfo map_info;
-            if (!gst_memory_map(mem_in, &map_info, GST_MAP_READ)) {
-                GST_ERROR_OBJECT(filter, "Failed to map input memory");
-                gst_buffer_unref(buf);
-                gst_buffer_unref(buf);
-                continue;
-            }
-            // Copy data to DMABUF memory
-            dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_dmabuf));
-            memcpy(filter->cached_dmabuf_ptr[0], map_info.data, mem_size);
-            dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_dmabuf));
-            gst_memory_unmap(mem_in, &map_info);
-            // GST_DEBUG_OBJECT(filter, "Copied %zu bytes to DMABUF memory fd %d",
-            //     mem_size, gst_dmabuf_memory_get_fd(mem_in_dmabuf));
-        }
-
-        if (filter->rknn_model_loaded == FALSE) {
-            GST_ERROR_OBJECT(filter, "RKNN model not loaded, skipping processing");
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            continue;
-        }
-
-        GstMemory* mem_rknn_in = NULL;
-        if (!prepare_dmabuf_memory(filter, 1, filter->rknn_process.model_width * filter->rknn_process.model_height * filter->rknn_process.model_channel, &mem_rknn_in)) {
-            GST_ERROR_OBJECT(filter, "Failed to prepare RKNN input memory");
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            continue;
-        }
-
-        GstMemory* mem_in_rgb = NULL;
-
-        filter->src_buffer_index = (filter->src_buffer_index + 1) % (MAX_DMABUF_INSTANCES - 2);
-
-        if (!prepare_dmabuf_memory(filter, 2 + filter->src_buffer_index, calc_buffer_size(filter->aligned_width, filter->aligned_height, GST_VIDEO_FORMAT_RGB), &mem_in_rgb)) {
-            GST_ERROR_OBJECT(filter, "Failed to prepare RGB memory for RGA");
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            continue;
-        }
-
-        // rga improcess options
-        im_opt_t opt;
-        memset(&opt, 0, sizeof(opt));
-        int usage = IM_SYNC;
-        int ret;
-
-        // yuv rgb conversion
-        GST_DEBUG_OBJECT(filter, "gst_dmabuf_memory_get_fd(mem_in_dmabuf) = %d, rknn_input_mem fd = %d",
-            gst_dmabuf_memory_get_fd(mem_in_dmabuf), gst_dmabuf_memory_get_fd(mem_rknn_in));
-        rga_buffer_t rga_buf_in_dmabuf = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_dmabuf), filter->sink_width, filter->sink_height, filter->sink_width, filter->sink_height, filter->sink_rga_format);
-        im_rect rect_in_dmabuf = { 0, 0, filter->sink_width, filter->sink_height };
-        rga_buffer_t rga_buf_in_rgb = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_in_rgb), filter->aligned_width, filter->aligned_height, filter->aligned_width, filter->aligned_height, RK_FORMAT_RGB_888);
-        im_rect rect_in_rgb = { 0, 0, filter->sink_width, filter->sink_height };
-        rga_buffer_t pat = wrapbuffer_virtualaddr_t(NULL, 0, 0, 0, 0, RK_FORMAT_RGB_888); // pattern unused
-        im_rect rect_pat = { 0, 0, 0, 0 }; // pattern rect unused
-        dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_dmabuf));
-        dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        ret = improcess(rga_buf_in_dmabuf, rga_buf_in_rgb, // src, dst buffers
-            pat, // pattern buffer unused
-            rect_in_dmabuf, rect_in_rgb, rect_pat,
-            usage);
-        dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_dmabuf));
-        dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        if (ret != IM_STATUS_SUCCESS) {
-            GST_ERROR_OBJECT(filter, "RGA RGB conversion failed: %s", imStrError(ret));
-            gst_buffer_unref(buf);
-            gst_buffer_unref(buf);
-            continue;
-        }
-
-        if (filter->need_inference) {
-            // rga letterboxing
-            rga_buffer_t rga_buf_rknn_input = wrapbuffer_fd_t(gst_dmabuf_memory_get_fd(mem_rknn_in), filter->rknn_process.model_width, filter->rknn_process.model_height, filter->rknn_process.model_width, filter->rknn_process.model_height, RK_FORMAT_RGB_888);
-            // Define letterboxing rectangles
-            // Calculate scaling ratio to maintain aspect ratio
-            float scale_w = (float)filter->rknn_process.model_width / filter->sink_width;
-            float scale_h = (float)filter->rknn_process.model_height / filter->sink_height;
-            float scale = scale_w < scale_h ? scale_w : scale_h;
-            int new_w = (int)(filter->sink_width * scale + 0.5f);
-            int new_h = (int)(filter->sink_height * scale + 0.5f);
-            int offset_x = (filter->rknn_process.model_width - new_w) / 2;
-            int offset_y = (filter->rknn_process.model_height - new_h) / 2;
-            im_rect rect_rknn_input = { offset_x, offset_y, new_w, new_h };
-            filter->rknn_process.pads.left = offset_x;
-            filter->rknn_process.pads.right = offset_x + new_w;
-            filter->rknn_process.pads.top = offset_y;
-            filter->rknn_process.pads.bottom = offset_y + new_h;
-            filter->rknn_process.scale_w = scale;
-            filter->rknn_process.scale_h = scale;
-            filter->rknn_process.original_width = filter->sink_width;
-            filter->rknn_process.original_height = filter->sink_height;
-            GST_DEBUG_OBJECT(filter, "RGA letterboxing: src_rect=(%d,%d,%d,%d), dst_rect=(%d,%d,%d,%d)",
-                rect_in_dmabuf.x, rect_in_dmabuf.y, rect_in_dmabuf.width, rect_in_dmabuf.height,
-                rect_rknn_input.x, rect_rknn_input.y, rect_rknn_input.width, rect_rknn_input.height);
-
-            dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
-            dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_rknn_in));
-            ret = improcess(rga_buf_in_rgb, rga_buf_rknn_input, // src, dst buffers
-                pat, // pattern buffer unused
-                rect_in_rgb, rect_rknn_input, rect_pat,
-                usage);
-            dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
-            dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_rknn_in));
-            if (ret != IM_STATUS_SUCCESS) {
-                GST_ERROR_OBJECT(filter, "RGA letterboxing failed: %s", imStrError(ret));
-                gst_buffer_unref(buf);
-                gst_buffer_unref(buf);
-                continue;
-            }
-        }
-        // Save RGB result as BMP (24-bit) for debugging
-        // save_rgb_to_bmp("out.bmp", (unsigned char*)(filter->cached_dmabuf_ptr[1]), filter->model_width, filter->model_height);
-
-        // gst_buffer_unref(buf);
-
-        filter->rknn_process.inputs[0].buf = filter->cached_dmabuf_ptr[1];
-        // Calculate FPS
-        calculate_fps(filter);
-
-        dmabuf_sync_start(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        if (filter->need_inference) {
-            // 执行推理
-            rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2 + filter->src_buffer_index], 0.6, 0.45, filter->show_fps ? 1 : 0, filter->current_fps, 1);
-        } else {
-            // 不推理时，直接将上一帧的结果绘制到当前帧
-            rknn_inference_and_postprocess(&filter->rknn_process, filter->cached_dmabuf_ptr[2 + filter->src_buffer_index], 0.6, 0.45, filter->show_fps ? 1 : 0, filter->current_fps, 0);
-        }
-        dmabuf_sync_stop(gst_dmabuf_memory_get_fd(mem_in_rgb));
-        // check refcount of out gst memory
-
-        if (!filter->src_buffer) {
-            filter->src_buffer = gst_buffer_new(); // src_buffer refcount=1
-        }
-        if (gst_buffer_n_memory(filter->src_buffer) == 0) {
-            GstMemory* mem_in_rgb_ref = gst_memory_ref(mem_in_rgb); // mem_in_rgb refcount=2
-            gst_buffer_append_memory(filter->src_buffer, mem_in_rgb_ref); // mem_in_rgb refcount=2, mem_in_rgb_ref refcount=1, src_buffer refcount=1
-        }
-        // 继承时间戳和元数据
-        GST_BUFFER_PTS(filter->src_buffer) = GST_BUFFER_PTS(buf);
-        GST_BUFFER_DTS(filter->src_buffer) = GST_BUFFER_DTS(buf);
-        GST_BUFFER_DURATION(filter->src_buffer) = GST_BUFFER_DURATION(buf);
-
-        // Ensure RGB caps are set before pushing buffer
-        // gst_plugin_rknn_ensure_rgb_caps(filter);
-
-        gst_pad_push(filter->srcpad, filter->src_buffer); // mem_in_rgb refcount=1?
-        filter->src_buffer = NULL;
-
-        // usleep(100000); // 模拟处理延时
-        // GST_DEBUG_OBJECT(filter, "Processing buffer with size: %zu", mem_size);
-
-        // if (ret < 0) {
-        //     GST_WARNING_OBJECT(filter, "Failed to push buffer, ret = %d", ret);
-        // }
-
-        // gst_pad_push(filter->srcpad, buf);
-        gst_buffer_unref(buf);
-        gst_buffer_unref(buf);
-        // print time consumed
-        GST_DEBUG_OBJECT(filter, "Processing time: %ld us",
-            g_get_monotonic_time() - current_time);
-    }
-    return NULL;
+  /* just push out the incoming buffer without touching it */
+  return GST_FLOW_OK;
 }
 
 /* entry point to initialize the plug-in
  * initialize the plug-in itself
  * register the element factories and other features
  */
-static gboolean
-plugin_init(GstPlugin* plugin)
-{
-    /* debug category for filtering log messages
-     *
-     * exchange the string 'Template plugin' with your description
-     */
-    GST_DEBUG_CATEGORY_INIT(gst_plugin_rknn_debug, "rknn",
-        0, "RKNN plugin");
+static gboolean plugin_init(GstPlugin *plugin) {
 
-    return GST_ELEMENT_REGISTER(plugin_rknn, plugin);
+  /* debug category for filtering log messages
+   *
+   * exchange the string 'Template plugin' with your description
+   */
+
+  GST_DEBUG_CATEGORY_INIT(gst_plugin_rknn_debug, "rknn", 0, "RKNN plugin");
+
+  GST_LOG("Plugin debug category initialized");
+
+  gboolean result = GST_ELEMENT_REGISTER(plugin_rknn, plugin);
+
+  GST_LOG("Plugin registration result: %d", result);
+
+  return result;
 }
 
 /* PACKAGE: this is usually set by meson depending on some _INIT macro
@@ -1003,21 +941,10 @@ plugin_init(GstPlugin* plugin)
 #define PACKAGE "gst-plugin-rknn"
 #endif
 
-/*
- * GST_PLUGIN_DEFINE:
- * @major: major version number of the gstreamer-core that plugin was compiled for
- * @minor: minor version number of the gstreamer-core that plugin was compiled for
- * @name: short, but unique name of the plugin
- * @description: information about the purpose of the plugin
- * @init: function pointer to the plugin_init method with the signature of <code>static gboolean plugin_init (GstPlugin * plugin)</code>.
- * @version: full version string (e.g. VERSION from config.h)
- * @license: under which licence the package has been released, e.g. GPL, LGPL.
- * @package: the package-name (e.g. PACKAGE_NAME from config.h)
- * @origin: a description from where the package comes from (e.g. the homepage URL)
+/* gstreamer looks for this structure to register plugins
+ *
+ * exchange the string 'Template plugin' with your plugin description
  */
-GST_PLUGIN_DEFINE(GST_VERSION_MAJOR,
-    GST_VERSION_MINOR,
-    rknn,
-    "rknn",
-    plugin_init,
-    PACKAGE_VERSION, GST_LICENSE, GST_PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, rknn, "rknn",
+                  plugin_init, PACKAGE_VERSION, GST_LICENSE, GST_PACKAGE_NAME,
+                  GST_PACKAGE_ORIGIN)

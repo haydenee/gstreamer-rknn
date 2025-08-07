@@ -49,17 +49,16 @@
 
 #include "glib.h"
 #include "gst/gstbuffer.h"
-#include "gst/gsttask.h"
 #include "gst/video/video-format.h"
-#include "gst/video/video-info.h"
 #include <gst/gst.h>
-#include "RgaUtils.h"
-#include "im2d.h"
-#include "rga.h"
-#include "rknn_api.h"
+#include <gst/video/gstvideopool.h>
 #include "rknnprocess.h"
+#include "glib/gasyncqueue.h"
 #define MAX_QUEUE_LENGTH 4
 #define MAX_DMABUF_INSTANCES 5
+#define DEFAULT_WORKERS 3
+
+
 #define ALIGN_UP(x, align) (((x) + ((align)-1)) & ~((align)-1))
 
 #define PLUGIN_RKNN_SUPPORT_FORMATS MPP_SUPPORT_FORMATS "," RGA_SUPPORT_FORMATS
@@ -86,61 +85,52 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(GstPluginRknn, gst_plugin_rknn,
     GST, PLUGIN_RKNN, GstElement)
     
-typedef struct {
-    GstPluginRknn *filter;
-    gboolean stop;
-} RknnTaskData;
 
 struct _GstPluginRknn {
     GstElement element;
+    
+    GstPad* sinkpad;
+    GstPad* srcpad;
+    
+    gchar* model_path;
+    gchar* label_path;
 
-    GstPad *sinkpad, *srcpad;
+    int workers;
+    GAsyncQueue* rknn_input_queue;
+    GAsyncQueue* rgb_input_queue;
+    GAsyncQueue* rknn_output_queue;
+    GAsyncQueue* rgb_output_queue;
+    guint64 next_output_offset;
+    GList* out_of_order_buffers;
+    GThread* output_collector_thread;
 
-    gboolean silent;
-    gboolean bypass;
+    GThread** task_threads;  // 多个消费者线程
 
-    GAsyncQueue* queue;
-    GThread* task_thread;
-    RknnTaskData* task_data;
     GstCaps* sink_caps;
     GstCaps* src_caps;
 
-    gint64 last_buffer_full_log_time;
-
-    int dma_heap_fd;
-
-    int cached_dmabuf_fd[MAX_DMABUF_INSTANCES];
-    void* cached_dmabuf_ptr[MAX_DMABUF_INSTANCES];
-    gsize cached_dmabuf_size[MAX_DMABUF_INSTANCES];
-    GstAllocator* cached_allocator[MAX_DMABUF_INSTANCES];
-    GstMemory* cached_dmabuf_mem[MAX_DMABUF_INSTANCES];
-
-    GstBuffer* src_buffer;
-    int src_buffer_index;
+    struct RknnEngine** rknn_engines;
+    gint rknn_width;
+    gint rknn_height;
     
-    guint sink_width;
-    guint sink_height;
-    guint aligned_width;
-    guint aligned_height;
+    // 输入格式信息
     GstVideoFormat sink_format;
-    GstVideoInfo sink_info;
-    RgaSURF_FORMAT sink_rga_format;
+    gint sink_width;
+    gint sink_height;
+    gint aligned_width;
+    gint aligned_height;
+    gboolean sink_format_is_rgb;
+    gboolean sink_need_align;
 
-
-    gboolean rknn_model_loaded;
-    struct _RknnProcess rknn_process;
-
-    gboolean show_fps;
-    gint64 fps_start_time;
-    gint64 fps_frame_count;
-    gdouble current_fps;
-    gint64 fps_update_interval; // in microseconds
+    GstBuffer* raw_input_aligned;
     
-    /* 帧间隔推理相关变量 */
-    gint frame_skip;         // 推理间隔帧数，0表示不跳帧
-    gint frame_counter;      // 当前帧计数器
-    gboolean need_inference; // 当前帧是否需要推理
+    // 缓冲区池 - 用于替代直接创建缓冲区
+    GstVideoBufferPool* rknn_buffer_pool;      // RKNN输入缓冲区池
+    GstVideoBufferPool* rgb_buffer_pool;       // RGB图像缓冲区池
 };
+
+// 前向声明
+void destroy_rknn_engines(GstPluginRknn* filter);
 
 G_END_DECLS
 

@@ -2,12 +2,17 @@
 #include "opencv2/core/mat.hpp"
 #include "opencv2/opencv.hpp"
 #include "postprocess.h"
+#include "common_structs.h"
 #include "rknn_api.h"
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <gst/gst.h>
+
+GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
+#define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
 static unsigned char* load_data(FILE* fp, size_t ofst, size_t sz);
 static unsigned char* load_model(const char* filename, int* model_size);
@@ -18,7 +23,8 @@ static void draw_fps_on_frame(cv::Mat& image, double fps);
 extern "C" {
 #endif
 
-int rknn_prepare(struct _RknnProcess* rknn_process)
+
+int rknn_prepare(struct RknnEngine* rknn_process)
 {
     int ret;
     /* Create the neural network */
@@ -52,7 +58,7 @@ int rknn_prepare(struct _RknnProcess* rknn_process)
 
     rknn_process->input_attrs = (rknn_tensor_attr*)malloc(sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
     memset(rknn_process->input_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
-    for (int i = 0; i < rknn_process->io_num.n_input; i++) {
+    for (uint i = 0; i < rknn_process->io_num.n_input; i++) {
         rknn_process->input_attrs[i].index = i;
         ret = rknn_query(rknn_process->ctx, RKNN_QUERY_INPUT_ATTR, &(rknn_process->input_attrs[i]), sizeof(rknn_tensor_attr));
         if (ret < 0) {
@@ -64,7 +70,7 @@ int rknn_prepare(struct _RknnProcess* rknn_process)
 
     rknn_process->output_attrs = (rknn_tensor_attr*)malloc(sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
     memset(rknn_process->output_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
-    for (int i = 0; i < rknn_process->io_num.n_output; i++) {
+    for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
         rknn_process->output_attrs[i].index = i;
         ret = rknn_query(rknn_process->ctx, RKNN_QUERY_OUTPUT_ATTR, &(rknn_process->output_attrs[i]), sizeof(rknn_tensor_attr));
         dump_tensor_attr(&(rknn_process->output_attrs[i]));
@@ -101,7 +107,7 @@ int rknn_prepare(struct _RknnProcess* rknn_process)
 
     rknn_process->outputs = (rknn_output*)malloc(sizeof(rknn_output) * rknn_process->io_num.n_output);
     memset(rknn_process->outputs, 0, sizeof(rknn_output) * rknn_process->io_num.n_output);
-    for (int i = 0; i < rknn_process->io_num.n_output; i++) {
+    for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
         rknn_process->outputs[i].index = i;
         rknn_process->outputs[i].want_float = 0; // 默认不需要
     }
@@ -109,38 +115,38 @@ int rknn_prepare(struct _RknnProcess* rknn_process)
     return 0;
 }
 
-int rknn_inference_and_postprocess(
-    struct _RknnProcess* rknn_process,
-    void* orig_img,
-    float box_conf_threshold,
-    float nms_threshold,
-    int show_fps,      
-    double current_fps,
+int rknn_inference(
+    struct RknnEngine* rknn_process,
     int do_inference
 )
 {
     int ret = 0;
 
-    cv::Mat orig_img_cv(rknn_process->original_height, rknn_process->original_width, CV_8UC3, orig_img);
-
-    if (do_inference) { 
+    if (do_inference) {
         rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
-
         rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input, rknn_process->inputs);
         // 执行推理
         ret = rknn_run(rknn_process->ctx, NULL);
         ret = rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs, NULL);
     }
 
-    // 后处理
-    detect_result_group_t detect_result_group;
+    return ret;
+}
+
+int rknn_postprocess(
+    struct RknnEngine* rknn_process,
+    float box_conf_threshold,
+    float nms_threshold,
+    detect_result_group_t* detect_result_group
+)
+{
     std::vector<float> out_scales;
     std::vector<int32_t> out_zps;
-    for (int i = 0; i < rknn_process->io_num.n_output; ++i) {
+    for (uint i = 0; i < rknn_process->io_num.n_output; ++i) {
         out_scales.push_back(rknn_process->output_attrs[i].scale);
         out_zps.push_back(rknn_process->output_attrs[i].zp);
     }
-    post_process(
+    return post_process(
         (int8_t*)rknn_process->outputs[0].buf,
         (int8_t*)rknn_process->outputs[1].buf,
         (int8_t*)rknn_process->outputs[2].buf,
@@ -153,17 +159,28 @@ int rknn_inference_and_postprocess(
         rknn_process->scale_h,
         out_zps,
         out_scales,
-        &detect_result_group,
+        detect_result_group,
         rknn_process->label_path
     );
+}
 
+void rknn_visualize(
+    struct RknnEngine* rknn_process,
+    void* orig_img,
+    detect_result_group_t* detect_result_group,
+    int show_fps,
+    double current_fps
+)
+{
+    cv::Mat orig_img_cv(rknn_process->original_height, rknn_process->original_width, CV_8UC3, orig_img);
+    
     // 画框和概率
     char text[256];
-    for (int i = 0; i < detect_result_group.count; i++) {
-        detect_result_t* det_result = &(detect_result_group.results[i]);
+    for (int i = 0; i < detect_result_group->count; i++) {
+        detect_result_t* det_result = &(detect_result_group->results[i]);
         sprintf(text, "%s %.1f%%", det_result->name, det_result->prop * 100);
-        // printf("%s @ (%d %d %d %d) %f\n", det_result->name, det_result->box.left, det_result->box.top,
-        //     det_result->box.right, det_result->box.bottom, det_result->prop);
+        GST_TRACE("%s @ (%d %d %d %d) %f", det_result->name, det_result->box.left, det_result->box.top,
+             det_result->box.right, det_result->box.bottom, det_result->prop);
         int x1 = det_result->box.left;
         int y1 = det_result->box.top;
         int x2 = det_result->box.right;
@@ -175,12 +192,8 @@ int rknn_inference_and_postprocess(
         draw_fps_on_frame(orig_img_cv, current_fps);
     }
     // imwrite("inference.bmp", orig_img_cv);
-
-    // 释放推理结果
-    
-    return ret;
 }
-void rknn_release(struct _RknnProcess* rknn_process) 
+void rknn_release(struct RknnEngine* rknn_process) 
 {
     if (rknn_process->input_attrs) free(rknn_process->input_attrs);
     if (rknn_process->output_attrs) free(rknn_process->output_attrs);
@@ -241,7 +254,7 @@ static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::
 static void dump_tensor_attr(rknn_tensor_attr* attr)
 {
     std::string shape_str = attr->n_dims < 1 ? "" : std::to_string(attr->dims[0]);
-    for (int i = 1; i < attr->n_dims; ++i) {
+    for (uint i = 1; i < attr->n_dims; ++i) {
         shape_str += ", " + std::to_string(attr->dims[i]);
     }
 

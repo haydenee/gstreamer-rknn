@@ -122,6 +122,32 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     man-db \
     bc
 
+
+# 步骤6: 安装其它开发环境工具（网络工具、磁盘工具等）
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
+    # 网络工具
+    iputils-ping \
+    net-tools \
+    dnsutils \
+    # 磁盘工具
+    ncdu \
+    # 进程和系统监控工具
+    procps \
+    psmisc \
+    lsof \
+    strace \
+    gdb \
+    # 其他实用工具
+    jq \
+    less \
+    man-db \
+    bc \
+    # Node.js 和 npm
+    nodejs \
+    npm
+
 # 安装meson交叉编译配置文件
 COPY docker/meson-cross-aarch64.txt /opt/meson-cross-aarch64.txt
 
