@@ -75,8 +75,8 @@ echo "3. 执行 image_stream_test.sh 测试（5秒后强制退出）..."
 ssh $REMOTE_HOST "cd $REMOTE_DIR && timeout 5 $TEST_SCRIPT > $LOG_FILE 2>&1 || true"
 
 echo "4. 下载文件到本地并清理控制字符"
-scp $REMOTE_HOST:$LOG_FILE $LOCAL_LOG_FILE
-scp $REMOTE_HOST:$REMOTE_DIR/test/bus_detection_output.mp4 /workspace/test
+rsync -avz --exclude='.git' --exclude='docker' --exclude='build*' --exclude="src" ./ $REMOTE_HOST:$REMOTE_DIR/
+
 sed -i 's/\x1b\[[0-9;]*m//g' $LOCAL_LOG_FILE
 
 echo "=== 测试完成 ==="
