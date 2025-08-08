@@ -155,8 +155,8 @@ int rknn_postprocess(
         box_conf_threshold,
         nms_threshold,
         rknn_process->pads,
-        rknn_process->scale_w,
-        rknn_process->scale_h,
+        rknn_process->scale,
+        rknn_process->scale,
         out_zps,
         out_scales,
         detect_result_group,
@@ -172,7 +172,8 @@ void rknn_visualize(
     double current_fps
 )
 {
-    cv::Mat orig_img_cv(rknn_process->original_height, rknn_process->original_width, CV_8UC3, orig_img);
+    cv::Mat orig_img_cv(rknn_process->original_height, rknn_process->original_width, CV_8UC3, orig_img, GST_ROUND_UP_16(rknn_process->original_width) * 3);
+    // GST_DEBUG("opencv %d %d %d", rknn_process->original_width, rknn_process->original_height, GST_ROUND_UP_16(rknn_process->original_width) * 3);
     
     // 画框和概率
     char text[256];
@@ -191,7 +192,7 @@ void rknn_visualize(
     if (show_fps) {
         draw_fps_on_frame(orig_img_cv, current_fps);
     }
-    // imwrite("inference.bmp", orig_img_cv);
+    
 }
 void rknn_release(struct RknnEngine* rknn_process) 
 {

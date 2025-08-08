@@ -14,8 +14,9 @@ struct RknnEngine {
     int model_height;
     int model_channel;
     BOX_RECT pads;
-    float scale_w;
-    float scale_h;
+    float scale;
+    int new_width;
+    int new_height;
     int original_width;
     int original_height;
     unsigned char* model_data;

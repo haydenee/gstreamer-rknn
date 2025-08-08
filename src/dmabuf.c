@@ -310,14 +310,17 @@ void log_buffer_info(GstBuffer *buf) {
                   ", Offset: %" G_GSIZE_FORMAT
                   ", Allocator: %s"
                   ", Parent: %p"
-                  ", Mapped: yes (size: %" G_GSIZE_FORMAT ")",
+                  ", Mapped: yes (size: %" G_GSIZE_FORMAT ")"
+                  ", Pointer: %p",
                   i,
                   mem->size,
                   mem->maxsize,
                   mem->offset,
                   mem->allocator ? GST_OBJECT_NAME(mem->allocator) : "none",
                   mem->parent,
-                  map_info.size);
+                  map_info.size,
+                  map_info.data
+                );
         
         // 尝试获取 DMA-BUF 特定信息
         if (mem->allocator && g_strcmp0(GST_OBJECT_NAME(mem->allocator), "GstDmaBufAllocator") == 0) {

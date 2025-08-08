@@ -25,7 +25,7 @@
 #define __DMA_BUF_H__
 
 #include <gst/gst.h>
-#include "gstrknn.h"
+#include <gst/video/gstvideopool.h>
 
 G_BEGIN_DECLS
 
@@ -38,7 +38,7 @@ void dmabuf_heap_close(void);
 void log_buffer_info(GstBuffer* buf);
 
 // Buffer pool creation function
-GstVideoBufferPool* dma_buffer_pool_new(GstVideoFormat format, gint width, gint height, gint align);
+GstVideoBufferPool* dma_buffer_pool_new(GstVideoFormat format, gint width, gint height, gint w_align, gint h_align);
 
 G_END_DECLS
 

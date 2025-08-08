@@ -1,14 +1,18 @@
 #include "rgaprocess.h"
 #include "RgaUtils.h"
+#include "dmabuf.h"
 #include "gst/gstmemory.h"
 #include "gst/gstbufferpool.h"
 #include "gst/gststructure.h"
+#include "im2d_type.h"
 #include "opencv2/core/core.hpp"
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 #include "gst/allocators/gstdmabuf.h"
 #include "gst/video/video-info.h"
 #include "gst/gstinfo.h"
+#include "gstrknn.h"
+#include <math.h>
 
 
 GST_DEBUG_CATEGORY_EXTERN (gst_plugin_rknn_debug);
@@ -74,7 +78,7 @@ gboolean save_rgb_to_bmp(const char* filename, const unsigned char* rgb_data, in
     int pad = (4 - (row_stride % 4)) % 4;
     int bmp_data_size = (row_stride + pad) * height;
     int file_size = 54 + bmp_data_size;
-
+    GST_DEBUG("stride %d pad %d file_size %d", row_stride, pad ,file_size);
     // BMP file header (14 bytes)
     unsigned char bmp_file_header[14] = {
         'B', 'M',
@@ -175,46 +179,43 @@ int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
         return -1;
     }
 
-    // // 首先检查 buffer 的 pool 信息
-    // GstBufferPool *buffer_pool = gst_buf->pool;
-    // GST_INFO("Buffer Pool 信息:");
-    // if (buffer_pool == NULL) {
-    //   GST_INFO("  - Buffer Pool: NULL (缓冲池为空)");
-    // } else {
-    //   GST_INFO("  - Buffer Pool: %p (非空)", buffer_pool);
-    //   GST_INFO("  - Buffer Pool 类型: %s", G_OBJECT_TYPE_NAME(buffer_pool));
-      
-    //   // 尝试获取缓冲池的配置信息
-    //   GstStructure *config = gst_buffer_pool_get_config(buffer_pool);
-    //   if (config) {
-    //     GST_INFO("  - Buffer Pool 配置: %s", gst_structure_to_string(config));
-    //     gst_structure_free(config);
-    //   } else {
-    //     GST_INFO("  - Buffer Pool 配置: 无法获取");
-    //   }
-    // }
-
     GstVideoMeta* meta = gst_buffer_get_video_meta(gst_buf);
 
     GstVideoFormat format = meta->format;
     gint width = meta->width;
     gint height = meta->height;
     const GstVideoFormatInfo* format_info = gst_video_format_get_info(format);
-    gint wstride = meta->stride[0] / format_info->pixel_stride[0];
+    gint wstride = meta->stride[0] / format_info->pixel_stride[0]; 
+    // 注意，mpp 有一个坑，它返回的 NV12/NV16 格式，offset 居然是错的，实际对齐到了 16像素但给的 offset 没有。
+    // workaround: 插件里所有 buffer 高度都固定对齐到 16。
+    gint hstride = GST_ROUND_UP_16(height);
 
-    //gint hstride = height + alignment.padding_bottom;
-    gint hstride = height;
-    
-    // GST_DEBUG("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
-    // GST_DEBUG("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
+    GST_DEBUG("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
+    GST_DEBUG("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
     RgaSURF_FORMAT rga_format = gst_to_rga_format(format);
     if (rga_format == RK_FORMAT_UNKNOWN) {
         return -1;
     }
-
+    
     // Assuming height is hstride.
     *rga_buf = wrapbuffer_fd_t(fd, width, height, wstride, hstride, rga_format);
     GST_LOG("Wrapping: fd:%d width:%d height:%d wstride:%d hstride:%d format:%d", fd, width, height, wstride, hstride, (int)rga_format);
+    return 0;
+}
+
+int test_draw_rectangle(GstBuffer* src_buf) {
+    rga_buffer_t rga_buf;
+    gst_buffer_to_rga_buffer(src_buf, &rga_buf);
+    im_rect rect;
+    rect.width = 100;
+    rect.height = 100;
+    rect.x = 100;
+    rect.y = 100;
+    int ret = imcheck({}, rga_buf, {}, rect, IM_COLOR_FILL);
+    GST_DEBUG("imcheck ret %d", ret);
+    ret = imrectangle(rga_buf, rect, 0xff00ff00, 2);
+
+    GST_DEBUG("test imrectangle ret %d", ret);
     return 0;
 }
 
@@ -224,7 +225,9 @@ int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
         GST_WARNING_OBJECT(obj, "Invalid buffer parameters in convert_format");
         return -1;
     }
-
+    GST_DEBUG_OBJECT(obj, "convert buf info:");
+    log_buffer_info(src_buf);
+    log_buffer_info(dst_buf);
     // // Log source buffer information
     // log_buffer_info(obj, src_buf);
     
@@ -241,7 +244,6 @@ int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
         GST_WARNING_OBJECT(obj, "Failed to convert source buffer to RGA buffer");
         return -1;
     }
-
     if (gst_buffer_to_rga_buffer(dst_buf, &rga_dst_buf) != 0) {
         GST_WARNING_OBJECT(obj, "Failed to convert destination buffer to RGA buffer");
         return -1;
@@ -255,8 +257,6 @@ int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
 
     im_rect src_rect = {0, 0, width, height};
     im_rect dst_rect = {0, 0, width, height};
-    rga_buffer_t pat = wrapbuffer_virtualaddr_t(NULL, 0, 0, 0, 0, RK_FORMAT_RGB_888); // pattern unused
-    im_rect rect_pat = { 0, 0, 0, 0 }; // pattern rect unused
     // Use RGA to perform the format conversion
 
     GstMapInfo src_map, dst_map;
@@ -270,7 +270,7 @@ int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
     }
 
     GST_LOG_OBJECT(obj, "Performing RGA format conversion");
-    int ret = improcess(rga_src_buf, rga_dst_buf, pat, src_rect, dst_rect, rect_pat, IM_SYNC);
+    int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
     if (ret != IM_STATUS_SUCCESS) {
         GST_ERROR_OBJECT(obj, "RGA format conversion failed with error code: %d", ret);
         return -1;
@@ -316,22 +316,24 @@ int scale_with_aspect_ratio(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_b
     int dst_width = rga_dst_buf.width;
     int dst_height = rga_dst_buf.height;
 
-    GST_DEBUG_OBJECT(obj, "Source dimensions: %dx%d, Destination dimensions: %dx%d", 
+    GST_DEBUG_OBJECT(obj, "Source dimensions: %dx%d, Destination dimensions: %dx%d",
                      src_width, src_height, dst_width, dst_height);
 
-    // Calculate scaling ratio to maintain aspect ratio
-    float scale_w = (float)dst_width / src_width;
-    float scale_h = (float)dst_height / src_height;
-    float scale = scale_w < scale_h ? scale_w : scale_h;
+    // Get pre-calculated values from the RKNN engine
+    GstPluginRknn *filter = GST_PLUGIN_RKNN(obj);
+    if (!filter || !filter->rknn_engines || !filter->rknn_engines[0]) {
+        GST_WARNING_OBJECT(obj, "Failed to get RKNN engine for pre-calculated values");
+        return -1;
+    }
     
-    int new_w = (int)(src_width * scale + 0.5f);
-    int new_h = (int)(src_height * scale + 0.5f);
-    
-    int offset_x = (dst_width - new_w) / 2;
-    int offset_y = (dst_height - new_h) / 2;
+    // Use pre-calculated values
+    int new_w = filter->rknn_engines[0]->new_width;
+    int new_h = filter->rknn_engines[0]->new_height;
+    int offset_x = filter->rknn_engines[0]->pads.left;
+    int offset_y = filter->rknn_engines[0]->pads.top;
 
-    GST_DEBUG_OBJECT(obj, "Scaling parameters - Scale: %.2f, New dimensions: %dx%d, Offset: (%d, %d)", 
-                     scale, new_w, new_h, offset_x, offset_y);
+    GST_DEBUG_OBJECT(obj, "Scaling parameters - New dimensions: %dx%d, Offset: (%d, %d)",
+                     new_w, new_h, offset_x, offset_y);
 
     im_rect src_rect = {0, 0, src_width, src_height};
     im_rect dst_rect = {offset_x, offset_y, new_w, new_h};

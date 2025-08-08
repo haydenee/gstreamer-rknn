@@ -7,7 +7,7 @@ eval "gst-inspect-1.0 rknn"
 echo "=== 创建测试图片序列 ==="
 # 创建多个软连接到同一张图片来模拟多帧视频
 rm -f /tmp/frame_*.jpg
-for i in {0..20}; do
+for i in {0..0}; do
     ln -s /root/gstreamer-rknn/test/bus.jpg /tmp/frame_$(printf "%02d" $i).jpg
 done
 
@@ -18,7 +18,7 @@ CMD="gst-launch-1.0 -e \
     ! mppjpegdec dma-feature=true \
     ! videorate \
     ! video/x-raw \
-    ! rknn workers=2 \
+    ! rknn workers=1 \
         model-path=/root/gstreamer-rknn/model/yolov5s-640-640.rknn \
         label-path=/root/gstreamer-rknn/model/coco_80_labels_list.txt \
     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
@@ -27,10 +27,10 @@ CMD="gst-launch-1.0 -e \
 
 echo "$CMD"
 
-export GST_DEBUG=*:1,rknn:7,exif-tags:1
+export GST_DEBUG=*:1,rknn:7,mpp:7,mppenc:7,mpph264enc:7:exif-tags:1
 export GST_MPP_NO_RGA=0
 export mpp_log_level=0
-
+export ROCKCHIP_RGA_LOG=1
 echo "=== envs ==="
 env | grep GST
 
