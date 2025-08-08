@@ -1,15 +1,15 @@
-#include "rknnprocess.h"
-#include "opencv2/core/mat.hpp"
-#include "opencv2/opencv.hpp"
-#include "postprocess.h"
-#include "common_structs.h"
-#include "rknn_api.h"
-#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
 #include <gst/gst.h>
+
+#include "rknnprocess.h"
+#include "postprocess.h"
+#include "common_structs.h"
+#include "rknn_api.h"
+#include "rgaprocess.h"
+
 
 GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
@@ -17,8 +17,6 @@ GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
 static unsigned char* load_data(FILE* fp, size_t ofst, size_t sz);
 static unsigned char* load_model(const char* filename, int* model_size);
 static void dump_tensor_attr(rknn_tensor_attr* attr);
-static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::Point org, int fontFace, double fontScale, cv::Scalar textColor, cv::Scalar bgColor, int thickness);
-static void draw_fps_on_frame(cv::Mat& image, double fps);
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -166,15 +164,13 @@ int rknn_postprocess(
 
 void rknn_visualize(
     struct RknnEngine* rknn_process,
-    void* orig_img,
-    detect_result_group_t* detect_result_group,
-    int show_fps,
-    double current_fps
-)
+    GstBuffer* output,
+    detect_result_group_t* detect_result_group)
 {
-    cv::Mat orig_img_cv(rknn_process->original_height, rknn_process->original_width, CV_8UC3, orig_img, GST_ROUND_UP_16(rknn_process->original_width) * 3);
     // GST_DEBUG("opencv %d %d %d", rknn_process->original_width, rknn_process->original_height, GST_ROUND_UP_16(rknn_process->original_width) * 3);
-    
+    rga_buffer_t rga_buf;
+    gst_buffer_to_rga_buffer(output, &rga_buf);
+
     // 画框和概率
     char text[256];
     for (int i = 0; i < detect_result_group->count; i++) {
@@ -186,13 +182,13 @@ void rknn_visualize(
         int y1 = det_result->box.top;
         int x2 = det_result->box.right;
         int y2 = det_result->box.bottom;
-        rectangle(orig_img_cv, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 55, 218), 2);
-        drawTextWithBackground(orig_img_cv, text, cv::Point(x1 - 1, y1 - 6), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), cv::Scalar(0, 55, 218, 0.5), 2);
+        im_rect rect;
+        rect.x = GST_ROUND_UP_2(x1);
+        rect.y = GST_ROUND_UP_2(y1);
+        rect.width = GST_ROUND_UP_2(x2 - x1);
+        rect.height = GST_ROUND_UP_2(y2 - y1);
+        imrectangle(rga_buf, rect, 0x00ff0000, 6);
     }
-    if (show_fps) {
-        draw_fps_on_frame(orig_img_cv, current_fps);
-    }
-    
 }
 void rknn_release(struct RknnEngine* rknn_process) 
 {
@@ -208,50 +204,11 @@ void rknn_release(struct RknnEngine* rknn_process)
     if(rknn_process->model_data) {
         free(rknn_process->model_data);
     }
-
 }
 #ifdef __cplusplus
 }
 #endif
-static void draw_fps_on_frame(cv::Mat& image, double fps)
-{
-    if (fps <= 0.0) {
-        return;
-    }
-    
-    char fps_text[64];
-    snprintf(fps_text, sizeof(fps_text), "FPS: %.1f", fps);
-    
-    // FPS display settings
-    cv::Point fps_position(10, 30);
-    int font_face = cv::FONT_HERSHEY_SIMPLEX;
-    double font_scale = 0.8;
-    cv::Scalar text_color(0, 255, 0); // Green color
-    cv::Scalar bg_color(0, 0, 0); // Black background
-    int thickness = 2;
-    
-    // Get text size for background rectangle
-    int baseline = 0;
-    cv::Size text_size = cv::getTextSize(fps_text, font_face, font_scale, thickness, &baseline);
-    baseline += thickness;
-    
-    // Draw background rectangle
-    cv::Rect text_bg_rect(fps_position.x - 5, fps_position.y - text_size.height - 5, 
-                         text_size.width + 10, text_size.height + baseline + 10);
-    cv::rectangle(image, text_bg_rect, bg_color, cv::FILLED);
-    
-    // Draw FPS text
-    cv::putText(image, fps_text, fps_position, font_face, font_scale, text_color, thickness);
-}
-static void drawTextWithBackground(cv::Mat &image, const std::string &text, cv::Point org, int fontFace, double fontScale, cv::Scalar textColor, cv::Scalar bgColor, int thickness)
-{
-    int baseline = 0;
-    cv::Size textSize = cv::getTextSize(text, fontFace, fontScale, thickness, &baseline);
-    baseline += thickness;
-    cv::Rect textBgRect(org.x, org.y - textSize.height, textSize.width, textSize.height + baseline);
-    cv::rectangle(image, textBgRect, bgColor, cv::FILLED);
-    cv::putText(image, text, org, fontFace, fontScale, textColor, thickness);
-}
+
 static void dump_tensor_attr(rknn_tensor_attr* attr)
 {
     std::string shape_str = attr->n_dims < 1 ? "" : std::to_string(attr->dims[0]);

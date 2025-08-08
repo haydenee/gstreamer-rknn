@@ -21,6 +21,7 @@ CMD="gst-launch-1.0 -e \
     ! rknn workers=1 \
         model-path=/root/gstreamer-rknn/model/yolov5s-640-640.rknn \
         label-path=/root/gstreamer-rknn/model/coco_80_labels_list.txt \
+        mppjpegdec_offset_workaround=1 \
     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
     ! h264parse ! mp4mux ! filesink location=test.mp4"
 
@@ -30,7 +31,7 @@ echo "$CMD"
 export GST_DEBUG=*:1,rknn:7,mpp:7,mppenc:7,mpph264enc:7:exif-tags:1
 export GST_MPP_NO_RGA=0
 export mpp_log_level=0
-export ROCKCHIP_RGA_LOG=1
+export ROCKCHIP_RGA_LOG=0
 echo "=== envs ==="
 env | grep GST
 

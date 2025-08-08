@@ -96,15 +96,15 @@ struct _GstPluginRknn {
     gchar* label_path;
 
     int workers;
+    gboolean mppjpegdec_offset_workaround;
     GAsyncQueue* rknn_input_queue;
-    GAsyncQueue* rgb_input_queue;
     GAsyncQueue* rknn_output_queue;
-    GAsyncQueue* rgb_output_queue;
+    GAsyncQueue* raw_input_queue;
+    GAsyncQueue* raw_output_queue;
     guint64 next_output_offset;
     GList* out_of_order_buffers;
     GThread* output_collector_thread;
-
-    GThread** task_threads;  // 多个消费者线程
+    GThread** task_threads;
 
     GstCaps* sink_caps;
     GstCaps* src_caps;
@@ -117,16 +117,11 @@ struct _GstPluginRknn {
     GstVideoFormat sink_format;
     gint sink_width;
     gint sink_height;
-    gint aligned_width;
-    gint aligned_height;
-    gboolean sink_format_is_rgb;
-    gboolean sink_need_align;
 
-    GstBuffer* raw_input_aligned;
     
     // 缓冲区池 - 用于替代直接创建缓冲区
     GstVideoBufferPool* rknn_buffer_pool;      // RKNN输入缓冲区池
-    GstVideoBufferPool* rgb_buffer_pool;       // RGB图像缓冲区池
+
 };
 
 // 前向声明

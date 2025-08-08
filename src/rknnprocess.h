@@ -2,6 +2,7 @@
 #define _RKNN_PROCESS_H_
 #include "rknn_api.h"
 #include "common_structs.h"
+#include <gst/gst.h>
 
 struct RknnEngine {
     rknn_context ctx;
@@ -43,12 +44,11 @@ int rknn_postprocess(
 
 void rknn_visualize(
     struct RknnEngine* rknn_process,
-    void* orig_img,
-    detect_result_group_t* detect_result_group,
-    int show_fps,
-    double current_fps
+    GstBuffer* output_buffer,
+    detect_result_group_t* detect_result_group
 );
 void rknn_release(struct RknnEngine* rknn_process);
+
 #ifdef __cplusplus
 }
 #endif

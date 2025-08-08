@@ -186,9 +186,9 @@ int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
     gint height = meta->height;
     const GstVideoFormatInfo* format_info = gst_video_format_get_info(format);
     gint wstride = meta->stride[0] / format_info->pixel_stride[0]; 
-    // 注意，mpp 有一个坑，它返回的 NV12/NV16 格式，offset 居然是错的，实际对齐到了 16像素但给的 offset 没有。
-    // workaround: 插件里所有 buffer 高度都固定对齐到 16。
-    gint hstride = GST_ROUND_UP_16(height);
+    // 注意，mpp 有一个 bug，它返回的 NV12/NV16 格式的 buffer，UV 平面的 offset 是错的，实际对齐到了 16 像素但给的 offset 对齐到了 2。
+    // 加了个选项 mppjpegdec_offset_workaround 修了。
+    gint hstride = meta->n_planes > 1 ? meta->offset[1] / meta->stride[0] : height;
 
     GST_DEBUG("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
     GST_DEBUG("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
@@ -213,19 +213,19 @@ int test_draw_rectangle(GstBuffer* src_buf) {
     rect.y = 100;
     int ret = imcheck({}, rga_buf, {}, rect, IM_COLOR_FILL);
     GST_DEBUG("imcheck ret %d", ret);
-    ret = imrectangle(rga_buf, rect, 0xff00ff00, 2);
+    ret = imrectangle(rga_buf, rect, 0x80808080, 10);
 
     GST_DEBUG("test imrectangle ret %d", ret);
     return 0;
 }
 
-int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
+int raw_to_rknn(struct RknnEngine* engine, GstBuffer* src_buf, GstBuffer* dst_buf)
 {
     if (!src_buf || !dst_buf) {
-        GST_WARNING_OBJECT(obj, "Invalid buffer parameters in convert_format");
+        GST_WARNING("Invalid buffer parameters in convert_format");
         return -1;
     }
-    GST_DEBUG_OBJECT(obj, "convert buf info:");
+    GST_DEBUG("convert buf info:");
     log_buffer_info(src_buf);
     log_buffer_info(dst_buf);
     // // Log source buffer information
@@ -237,116 +237,50 @@ int convert_format(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
     rga_buffer_t rga_src_buf;
     rga_buffer_t rga_dst_buf;
 
-    GST_LOG_OBJECT(obj, "Converting buffer format using RGA");
+    GST_LOG("Converting buffer format using RGA");
 
     // Convert GstBuffer to rga_buffer_t
     if (gst_buffer_to_rga_buffer(src_buf, &rga_src_buf) != 0) {
-        GST_WARNING_OBJECT(obj, "Failed to convert source buffer to RGA buffer");
+        GST_WARNING("Failed to convert source buffer to RGA buffer");
         return -1;
     }
     if (gst_buffer_to_rga_buffer(dst_buf, &rga_dst_buf) != 0) {
-        GST_WARNING_OBJECT(obj, "Failed to convert destination buffer to RGA buffer");
+        GST_WARNING("Failed to convert destination buffer to RGA buffer");
         return -1;
     }
 
     // Get dimensions from rga_buffer_t
     int width = rga_src_buf.width;
     int height = rga_src_buf.height;
-
-    GST_DEBUG_OBJECT(obj, "Source dimensions: %dx%d", width, height);
+    int new_w = engine->new_width;
+    int new_h = engine->new_height;
+    int offset_x = engine->pads.left;
+    int offset_y = engine->pads.top;
+    GST_DEBUG("Source dimensions: %dx%d", width, height);
 
     im_rect src_rect = {0, 0, width, height};
-    im_rect dst_rect = {0, 0, width, height};
+    im_rect dst_rect = {offset_x, offset_y, new_w, new_h};
     // Use RGA to perform the format conversion
 
     GstMapInfo src_map, dst_map;
     if (!gst_buffer_map(src_buf, &src_map, GST_MAP_READ)) {
-        GST_WARNING_OBJECT(obj, "Failed to map source buffer");
+        GST_WARNING("Failed to map source buffer");
         return -1;
     }
     if (!gst_buffer_map(dst_buf, &dst_map, GST_MAP_WRITE)) {
-        GST_WARNING_OBJECT(obj, "Failed to map target buffer");
+        GST_WARNING("Failed to map target buffer");
         return -1;
     }
-
-    GST_LOG_OBJECT(obj, "Performing RGA format conversion");
+    
+    GST_LOG("Performing RGA format conversion");
     int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
     if (ret != IM_STATUS_SUCCESS) {
-        GST_ERROR_OBJECT(obj, "RGA format conversion failed with error code: %d", ret);
+        GST_ERROR("RGA format conversion failed with error code: %d", ret);
         return -1;
     }
-
     gst_buffer_unmap(src_buf, &src_map);
     gst_buffer_unmap(dst_buf, &dst_map);
-    GST_LOG_OBJECT(obj, "Format conversion completed successfully");
-    return 0;
-}
-
-int scale_with_aspect_ratio(GstObject* obj, GstBuffer* src_buf, GstBuffer* dst_buf)
-{
-    if (!src_buf || !dst_buf) {
-        GST_WARNING_OBJECT(obj, "Invalid buffer parameters in scale_with_aspect_ratio");
-        return -1;
-    }
-    // Log source buffer information
-    // log_buffer_info(obj, src_buf);
-    
-    // Log destination buffer information
-    // log_buffer_info(obj, dst_buf);
-
-    rga_buffer_t rga_src_buf;
-    rga_buffer_t rga_dst_buf;
-
-    GST_LOG_OBJECT(obj, "Scaling buffer with aspect ratio using RGA");
-
-    // Convert GstBuffer to rga_buffer_t
-    if (gst_buffer_to_rga_buffer(src_buf, &rga_src_buf) != 0) {
-        GST_WARNING_OBJECT(obj, "Failed to convert source buffer to RGA buffer");
-        return -1;
-    }
-
-    if (gst_buffer_to_rga_buffer(dst_buf, &rga_dst_buf) != 0) {
-        GST_WARNING_OBJECT(obj, "Failed to convert destination buffer to RGA buffer");
-        return -1;
-    }
-
-    // Get dimensions from rga_buffer_t
-    int src_width = rga_src_buf.width;
-    int src_height = rga_src_buf.height;
-    int dst_width = rga_dst_buf.width;
-    int dst_height = rga_dst_buf.height;
-
-    GST_DEBUG_OBJECT(obj, "Source dimensions: %dx%d, Destination dimensions: %dx%d",
-                     src_width, src_height, dst_width, dst_height);
-
-    // Get pre-calculated values from the RKNN engine
-    GstPluginRknn *filter = GST_PLUGIN_RKNN(obj);
-    if (!filter || !filter->rknn_engines || !filter->rknn_engines[0]) {
-        GST_WARNING_OBJECT(obj, "Failed to get RKNN engine for pre-calculated values");
-        return -1;
-    }
-    
-    // Use pre-calculated values
-    int new_w = filter->rknn_engines[0]->new_width;
-    int new_h = filter->rknn_engines[0]->new_height;
-    int offset_x = filter->rknn_engines[0]->pads.left;
-    int offset_y = filter->rknn_engines[0]->pads.top;
-
-    GST_DEBUG_OBJECT(obj, "Scaling parameters - New dimensions: %dx%d, Offset: (%d, %d)",
-                     new_w, new_h, offset_x, offset_y);
-
-    im_rect src_rect = {0, 0, src_width, src_height};
-    im_rect dst_rect = {offset_x, offset_y, new_w, new_h};
-    
-    // Use RGA to perform the scaling with aspect ratio
-    GST_LOG_OBJECT(obj, "Performing RGA scaling with aspect ratio");
-    int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
-    if (ret != IM_STATUS_SUCCESS) {
-        GST_ERROR_OBJECT(obj, "RGA scaling with aspect ratio failed with error code: %d", ret);
-        return -1;
-    }
-
-    GST_LOG_OBJECT(obj, "Scaling with aspect ratio completed successfully");
+    GST_LOG("Format conversion completed successfully");
     return 0;
 }
 
