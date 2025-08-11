@@ -190,6 +190,7 @@ void rknn_visualize(
         imrectangle(rga_buf, rect, 0x00ff0000, 6);
     }
 }
+
 void rknn_release(struct RknnEngine* rknn_process) 
 {
     if (rknn_process->input_attrs) free(rknn_process->input_attrs);

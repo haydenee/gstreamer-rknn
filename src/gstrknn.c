@@ -332,6 +332,7 @@ gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
     meta->offset[1] = meta->stride[0] * GST_ROUND_UP_16(meta->height);
   }
   log_buffer_info(raw_buffer);
+
   // 从缓冲区池获取 RKNN 缓冲区
   GstFlowReturn acquire_result = gst_buffer_pool_acquire_buffer(
       GST_BUFFER_POOL(filter->rknn_buffer_pool), &rknn_buffer, NULL);
@@ -350,8 +351,7 @@ gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
     goto error;
   }
 
-  // 将处理后的缓冲区放入处理队列（保持原有逻辑）
-
+  // 将处理后的缓冲区放入处理队列
   g_async_queue_push(filter->rknn_input_queue, rknn_buffer);
   g_async_queue_push(filter->raw_input_queue, raw_buffer);
 
@@ -415,7 +415,9 @@ static gpointer rknn_engine_thread(gpointer data) {
     GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start visualize", worker_id,
                      rknn_buffer->offset);
 
-    rknn_visualize(rknn_engine, raw_buffer, &detect_result_group);
+    if (filter->draw_boxes) {
+      rknn_visualize(rknn_engine, raw_buffer, &detect_result_group);
+    }
 
     GST_INFO_OBJECT(filter, "Thread %d offset %zu done", worker_id,
                     rknn_buffer->offset);
@@ -514,7 +516,8 @@ enum {
   PROP_MODEL_PATH,
   PROP_LABEL_PATH,
   PROP_WORKERS,
-  PROP_MPPJPEGDEC_OFFSET_WORKAROUND
+  PROP_MPPJPEGDEC_OFFSET_WORKAROUND,
+  PROP_DRAW_BOXES
 };
 
 /* the capabilities of the inputs and outputs.
@@ -594,6 +597,12 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
           "Enable workaround for MPP JPEG decoder offset issues", FALSE,
           G_PARAM_READWRITE));
 
+  g_object_class_install_property(
+      gobject_class, PROP_DRAW_BOXES,
+      g_param_spec_boolean("draw-boxes", "Draw Boxes",
+                          "Enable drawing bounding boxes on output", TRUE,
+                          G_PARAM_READWRITE));
+
   GST_DEBUG("Label path property installed");
 
   gst_element_class_set_details_simple(
@@ -632,6 +641,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->rknn_engines = NULL;
   filter->workers = DEFAULT_WORKERS;            // 使用默认的 workers 数量
   filter->mppjpegdec_offset_workaround = FALSE; // 默认值为 FALSE
+  filter->draw_boxes = TRUE;                    // 默认值为 TRUE
   filter->rknn_width = 0;
   filter->rknn_height = 0;
 
@@ -732,6 +742,12 @@ static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
     GST_DEBUG_OBJECT(filter, "mppjpegdec_offset_workaround set to %s",
                      filter->mppjpegdec_offset_workaround ? "TRUE" : "FALSE");
     break;
+  case PROP_DRAW_BOXES:
+    GST_DEBUG_OBJECT(filter, "Setting draw_boxes property");
+    filter->draw_boxes = g_value_get_boolean(value);
+    GST_DEBUG_OBJECT(filter, "draw_boxes set to %s",
+                     filter->draw_boxes ? "TRUE" : "FALSE");
+    break;
   default:
     GST_WARNING_OBJECT(filter, "Invalid property ID: %d", prop_id);
     G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -765,6 +781,11 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
                      "Getting mppjpegdec_offset_workaround property: %s",
                      filter->mppjpegdec_offset_workaround ? "TRUE" : "FALSE");
     g_value_set_boolean(value, filter->mppjpegdec_offset_workaround);
+    break;
+  case PROP_DRAW_BOXES:
+    GST_DEBUG_OBJECT(filter, "Getting draw_boxes property: %s",
+                     filter->draw_boxes ? "TRUE" : "FALSE");
+    g_value_set_boolean(value, filter->draw_boxes);
     break;
   default:
     GST_WARNING_OBJECT(filter, "Invalid property ID: %d", prop_id);

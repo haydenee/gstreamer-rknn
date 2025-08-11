@@ -97,6 +97,7 @@ struct _GstPluginRknn {
 
     int workers;
     gboolean mppjpegdec_offset_workaround;
+    gboolean draw_boxes;
     GAsyncQueue* rknn_input_queue;
     GAsyncQueue* rknn_output_queue;
     GAsyncQueue* raw_input_queue;
