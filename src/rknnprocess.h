@@ -21,7 +21,6 @@ struct RknnEngine {
     int original_width;
     int original_height;
     unsigned char* model_data;
-    char* label_path;
     char* model_path;
 };
 
@@ -29,7 +28,7 @@ struct RknnEngine {
 extern "C" {
 #endif
 
-int rknn_prepare(struct RknnEngine* rknn_process);
+int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context);
 int rknn_inference(
     struct RknnEngine* rknn_process,
     int do_inference   // 新增参数：是否执行推理，0=不推理，1=推理

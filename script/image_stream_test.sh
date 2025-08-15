@@ -7,19 +7,20 @@ eval "gst-inspect-1.0 rknn"
 echo "=== 创建测试图片序列 ==="
 # 创建多个软连接到同一张图片来模拟多帧视频
 rm -f /tmp/frame_*.jpg
-for i in {0..0}; do
+for i in {0..4}; do
     ln -s /root/gstreamer-rknn/test/test.jpg /tmp/frame_$(printf "%02d" $i).jpg
 done
 
 echo "=== cmd ==="
 CMD="gst-launch-1.0 -e \
-    multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
+    multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=10/1\" \
     ! jpegparse \
     ! mppjpegdec dma-feature=true \
     ! videorate \
     ! video/x-raw \
     ! rknn workers=1 \
         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
+        resize_mode=crop \
         mppjpegdec_offset_workaround=1 \
     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
     ! h264parse ! mp4mux ! filesink location=test.mp4"

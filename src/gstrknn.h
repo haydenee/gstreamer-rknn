@@ -93,9 +93,9 @@ struct _GstPluginRknn {
     GstPad* srcpad;
     
     gchar* model_path;
-    gchar* label_path;
 
     int workers;
+    gchar* resize_mode;
     gboolean mppjpegdec_offset_workaround;
     gboolean draw_boxes;
     GAsyncQueue* rknn_input_queue;

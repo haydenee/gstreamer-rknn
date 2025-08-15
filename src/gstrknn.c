@@ -64,12 +64,10 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
       rknn_engine->model_path = g_strdup(filter->model_path);
     }
 
-    if (filter->label_path) {
-      rknn_engine->label_path = g_strdup(filter->label_path);
-    }
-
-    // 初始化 RKNN 引擎
-    int ret = rknn_prepare(rknn_engine);
+    // 初始化 RKNN 引擎，传入第一个引擎的上下文
+    // 第一次调用时，第一个引擎的上下文为0，会初始化新上下文
+    // 后续调用时，第一个引擎的上下文已初始化，会复用上下文
+    int ret = rknn_prepare(rknn_engine, &filter->rknn_engines[0]->ctx);
     if (ret < 0) {
       GST_ERROR_OBJECT(filter, "Failed to initialize RKNN engine %d", i);
       // 使用 destroy_rknn_engines 来释放所有已分配的资源
@@ -83,27 +81,37 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
 
     filter->rknn_width = rknn_engine->model_width;
     filter->rknn_height = rknn_engine->model_height;
-
-    // 计算缩放比例和填充
-    float scale_w = (float)rknn_engine->model_width / filter->sink_width;
-    float scale_h = (float)rknn_engine->model_height / filter->sink_height;
-    float scale = fmin(scale_w, scale_h);
-
-    int new_width = (int)(filter->sink_width * scale);
-    int new_height = (int)(filter->sink_height * scale);
-
-    int pad_left = (filter->rknn_width - new_width) / 2;
-    int pad_top = (filter->rknn_height - new_height) / 2;
-    GST_DEBUG("init scale and padding: scale %.2f %dx%d offset (%d %d)", scale,
-              new_width, new_height, pad_left, pad_top);
-    rknn_engine->scale = scale;
-    rknn_engine->new_width = new_width;
-    rknn_engine->new_height = new_height;
-    rknn_engine->pads.left = pad_left;
-    rknn_engine->pads.top = pad_top;
-    rknn_engine->pads.right = pad_left + new_width;
-    rknn_engine->pads.bottom = pad_top + new_height;
   }
+
+  // 计算缩放比例和填充
+  float scale_w = (float)filter->rknn_width / filter->sink_width;
+  float scale_h = (float)filter->rknn_height / filter->sink_height;
+  float scale;
+  int new_width, new_height;
+  int offset_left = 0, offset_top = 0;
+
+  // 根据模式计算缩放比例
+  if (g_strcmp0(filter->resize_mode, "crop") == 0) {
+    // crop 模式：缩放到较长的边刚好足够长度，较短的边裁切掉一部分
+    scale = fmax(scale_w, scale_h);
+  } else {
+    // 默认 pad 模式：缩放到较短的边有足够长度，较长的边可以填充
+    scale = fmin(scale_w, scale_h);
+  }
+  
+  // 计算新尺寸
+  new_width = (int)(filter->sink_width * scale);
+  new_height = (int)(filter->sink_height * scale);
+  
+  // 统一计算偏移量
+  // 对于 crop 模式，至少有一条边会贴合，另一条边可能需要裁切（负值）
+  // 对于 pad 模式，所有边都需要填充（正值）
+  offset_left = (filter->rknn_width - new_width) / 2;
+  offset_top = (filter->rknn_height - new_height) / 2;
+  
+  // 直接输出 offset_left 和 offset_top 的值，不使用条件判断
+  GST_DEBUG("init scale and %s: scale %.2f %dx%d offset (%d %d)", 
+            filter->resize_mode, scale, new_width, new_height, offset_left, offset_top);
 
   GST_INFO_OBJECT(filter, "Initialized %d RKNN engines, model size: %dx%d",
                   filter->workers, filter->rknn_width, filter->rknn_height);
@@ -121,9 +129,6 @@ void destroy_rknn_engines(GstPluginRknn *filter) {
       rknn_release(filter->rknn_engines[i]);
       if (filter->rknn_engines[i]->model_path) {
         g_free(filter->rknn_engines[i]->model_path);
-      }
-      if (filter->rknn_engines[i]->label_path) {
-        g_free(filter->rknn_engines[i]->label_path);
       }
       g_free(filter->rknn_engines[i]);
     }
@@ -243,9 +248,9 @@ static void release_rknn_resources(GstPluginRknn *filter) {
     g_free(filter->model_path);
     filter->model_path = NULL;
   }
-  if (filter->label_path) {
-    g_free(filter->label_path);
-    filter->label_path = NULL;
+  if (filter->resize_mode) {
+    g_free(filter->resize_mode);
+    filter->resize_mode = NULL;
   }
   if (filter->sink_caps) {
     gst_caps_unref(filter->sink_caps);
@@ -514,10 +519,10 @@ static gpointer push_thread(gpointer data) {
 enum {
   PROP_0,
   PROP_MODEL_PATH,
-  PROP_LABEL_PATH,
   PROP_WORKERS,
   PROP_MPPJPEGDEC_OFFSET_WORKAROUND,
-  PROP_DRAW_BOXES
+  PROP_DRAW_BOXES,
+  PROP_RESIZE_MODE
 };
 
 /* the capabilities of the inputs and outputs.
@@ -580,9 +585,10 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
   GST_DEBUG("Model path property installed");
 
   g_object_class_install_property(
-      gobject_class, PROP_LABEL_PATH,
-      g_param_spec_string("label-path", "Label Path", "Path to the label file",
-                          NULL, G_PARAM_READWRITE));
+      gobject_class, PROP_RESIZE_MODE,
+      g_param_spec_string("resize-mode", "Resize Mode",
+                          "Resize mode: 'crop' or 'pad'", "pad",
+                          G_PARAM_READWRITE));
 
   g_object_class_install_property(
       gobject_class, PROP_WORKERS,
@@ -603,7 +609,7 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
                           "Enable drawing bounding boxes on output", TRUE,
                           G_PARAM_READWRITE));
 
-  GST_DEBUG("Label path property installed");
+  GST_DEBUG("Resize mode property installed");
 
   gst_element_class_set_details_simple(
       gstelement_class, "Plugin", "FIXME:Generic",
@@ -635,13 +641,13 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->sinkpad = NULL;
   filter->srcpad = NULL;
   filter->model_path = NULL;
-  filter->label_path = NULL;
   filter->sink_caps = NULL;
   filter->src_caps = NULL;
   filter->rknn_engines = NULL;
   filter->workers = DEFAULT_WORKERS;            // 使用默认的 workers 数量
   filter->mppjpegdec_offset_workaround = FALSE; // 默认值为 FALSE
   filter->draw_boxes = TRUE;                    // 默认值为 TRUE
+  filter->resize_mode = g_strdup("pad");        // 默认值为 "pad"
   filter->rknn_width = 0;
   filter->rknn_height = 0;
 
@@ -724,13 +730,6 @@ static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
     filter->model_path = g_value_dup_string(value);
     GST_DEBUG_OBJECT(filter, "model_path set to %s", filter->model_path);
     break;
-  case PROP_LABEL_PATH:
-    GST_DEBUG_OBJECT(filter, "Setting label_path property");
-    if (filter->label_path)
-      g_free(filter->label_path);
-    filter->label_path = g_value_dup_string(value);
-    GST_DEBUG_OBJECT(filter, "label_path set to %s", filter->label_path);
-    break;
   case PROP_WORKERS:
     GST_DEBUG_OBJECT(filter, "Setting workers property");
     filter->workers = g_value_get_int(value);
@@ -747,6 +746,13 @@ static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
     filter->draw_boxes = g_value_get_boolean(value);
     GST_DEBUG_OBJECT(filter, "draw_boxes set to %s",
                      filter->draw_boxes ? "TRUE" : "FALSE");
+    break;
+  case PROP_RESIZE_MODE:
+    GST_DEBUG_OBJECT(filter, "Setting resize_mode property");
+    if (filter->resize_mode)
+      g_free(filter->resize_mode);
+    filter->resize_mode = g_value_dup_string(value);
+    GST_DEBUG_OBJECT(filter, "resize_mode set to %s", filter->resize_mode);
     break;
   default:
     GST_WARNING_OBJECT(filter, "Invalid property ID: %d", prop_id);
@@ -767,11 +773,6 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
                      filter->model_path);
     g_value_set_string(value, filter->model_path);
     break;
-  case PROP_LABEL_PATH:
-    GST_DEBUG_OBJECT(filter, "Getting label_path property: %s",
-                     filter->label_path);
-    g_value_set_string(value, filter->label_path);
-    break;
   case PROP_WORKERS:
     GST_DEBUG_OBJECT(filter, "Getting workers property: %d", filter->workers);
     g_value_set_int(value, filter->workers);
@@ -786,6 +787,11 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
     GST_DEBUG_OBJECT(filter, "Getting draw_boxes property: %s",
                      filter->draw_boxes ? "TRUE" : "FALSE");
     g_value_set_boolean(value, filter->draw_boxes);
+    break;
+  case PROP_RESIZE_MODE:
+    GST_DEBUG_OBJECT(filter, "Getting resize_mode property: %s",
+                     filter->resize_mode);
+    g_value_set_string(value, filter->resize_mode);
     break;
   default:
     GST_WARNING_OBJECT(filter, "Invalid property ID: %d", prop_id);

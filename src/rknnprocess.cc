@@ -22,37 +22,55 @@ extern "C" {
 #endif
 
 
-int rknn_prepare(struct RknnEngine* rknn_process)
+int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
 {
     int ret;
     /* Create the neural network */
-    printf("Loading mode...\n");
+    GST_DEBUG("Loading model...");
     int model_data_size = 0;
-    if (!rknn_process || !rknn_process->model_path) {
-        printf("rknn_process or model_path is NULL\n");
-        return -1;
-    }
-    rknn_process->model_data = load_model(rknn_process->model_path, &model_data_size);
-    ret = rknn_init(&rknn_process->ctx, rknn_process->model_data, model_data_size, 0, NULL);
-    if (ret < 0) {
-        printf("rknn_init error ret=%d\n", ret);
-        return -1;
+    
+    // 初始化上下文为0（空值）
+    rknn_process->ctx = 0;
+    
+    // 如果提供了共享上下文且不为0，则复用它
+    if (shared_context != NULL && *shared_context != 0) {
+        GST_DEBUG("Duplicating shared RKNN context");
+        ret = rknn_dup_context(shared_context, &rknn_process->ctx);
+        if (ret < 0) {
+            GST_ERROR("rknn_dup_context error ret=%d", ret);
+            return -1;
+        }
+        // 复用上下文时不需要重新加载模型数据
+        rknn_process->model_data = NULL;
+    } else {
+        // 否则初始化新的上下文
+        if (!rknn_process->model_path) {
+            GST_ERROR("model_path is NULL");
+            return -1;
+        }
+        GST_DEBUG("Initializing new RKNN context");
+        rknn_process->model_data = load_model(rknn_process->model_path, &model_data_size);
+        ret = rknn_init(&rknn_process->ctx, rknn_process->model_data, model_data_size, 0, NULL);
+        if (ret < 0) {
+            GST_ERROR("rknn_init error ret=%d", ret);
+            return -1;
+        }
     }
 
     rknn_sdk_version version;
     ret = rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version, sizeof(rknn_sdk_version));
     if (ret < 0) {
-        printf("rknn_init error ret=%d\n", ret);
+        GST_ERROR("rknn_init error ret=%d", ret);
         return -1;
     }
-    printf("sdk version: %s driver version: %s\n", version.api_version, version.drv_version);
+    GST_DEBUG("sdk version: %s driver version: %s", version.api_version, version.drv_version);
 
     ret = rknn_query(rknn_process->ctx, RKNN_QUERY_IN_OUT_NUM, &rknn_process->io_num, sizeof(rknn_process->io_num));
     if (ret < 0) {
-        printf("rknn_init error ret=%d\n", ret);
+        GST_ERROR("rknn_init error ret=%d", ret);
         return -1;
     }
-    printf("model input num: %d, output num: %d\n", rknn_process->io_num.n_input, rknn_process->io_num.n_output);
+    GST_DEBUG("model input num: %d, output num: %d", rknn_process->io_num.n_input, rknn_process->io_num.n_output);
 
     rknn_process->input_attrs = (rknn_tensor_attr*)malloc(sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
     memset(rknn_process->input_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
@@ -60,7 +78,7 @@ int rknn_prepare(struct RknnEngine* rknn_process)
         rknn_process->input_attrs[i].index = i;
         ret = rknn_query(rknn_process->ctx, RKNN_QUERY_INPUT_ATTR, &(rknn_process->input_attrs[i]), sizeof(rknn_tensor_attr));
         if (ret < 0) {
-            printf("rknn_init error ret=%d\n", ret);
+            GST_ERROR("rknn_init error ret=%d", ret);
             return -1;
         }
         dump_tensor_attr(&(rknn_process->input_attrs[i]));
@@ -77,37 +95,40 @@ int rknn_prepare(struct RknnEngine* rknn_process)
     int channel = 3;
     int width = 0;
     int height = 0;
-    if (rknn_process->input_attrs[0].fmt == RKNN_TENSOR_NCHW) {
-        printf("model is NCHW input fmt\n");
-        channel = rknn_process->input_attrs[0].dims[1];
-        height = rknn_process->input_attrs[0].dims[2];
-        width = rknn_process->input_attrs[0].dims[3];
+    const rknn_tensor_attr attr = rknn_process->input_attrs[0];
+    if (attr.fmt == RKNN_TENSOR_NCHW) {
+        GST_DEBUG("model is NCHW input fmt");
     } else {
-        printf("model is NHWC input fmt\n");
-        height = rknn_process->input_attrs[0].dims[1];
-        width = rknn_process->input_attrs[0].dims[2];
-        channel = rknn_process->input_attrs[0].dims[3];
+        GST_DEBUG("model is NHWC input fmt");
     }
+    
+    channel = attr.dims[1];
+    height = attr.dims[2];
+    width = attr.dims[3];
 
-    printf("model input height=%d, width=%d, channel=%d\n", height, width, channel);
+    GST_DEBUG("model input height=%d, width=%d, channel=%d", height, width, channel);
 
     rknn_process->inputs = (rknn_input*)malloc(sizeof(rknn_input) * rknn_process->io_num.n_input);
     memset(rknn_process->inputs, 0, sizeof(rknn_input) * rknn_process->io_num.n_input);
-    rknn_process->inputs[0].index = 0;
-    rknn_process->inputs[0].type = RKNN_TENSOR_UINT8;
-    rknn_process->inputs[0].size = width * height * channel;
-    rknn_process->inputs[0].fmt = RKNN_TENSOR_NHWC;
+    rknn_process->inputs[0].index = attr.index;
+    rknn_process->inputs[0].type = attr.type;
+    rknn_process->inputs[0].size = attr.size;
     rknn_process->inputs[0].pass_through = 0;
+    rknn_process->inputs[0].fmt = attr.fmt;
 
     rknn_process->model_width = width;
     rknn_process->model_height = height;
     rknn_process->model_channel = channel;
 
+    // TODO: Prealloc output memory
     rknn_process->outputs = (rknn_output*)malloc(sizeof(rknn_output) * rknn_process->io_num.n_output);
     memset(rknn_process->outputs, 0, sizeof(rknn_output) * rknn_process->io_num.n_output);
     for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
-        rknn_process->outputs[i].index = i;
+        const rknn_tensor_attr attr = rknn_process->output_attrs[i];
+        rknn_process->outputs[i].index = attr.index;
         rknn_process->outputs[i].want_float = 0; // 默认不需要
+        rknn_process->outputs[i].is_prealloc = false;
+        rknn_process->outputs[i].size = attr.size;
     }
 
     return 0;
@@ -121,7 +142,6 @@ int rknn_inference(
     int ret = 0;
 
     if (do_inference) {
-        rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
         rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input, rknn_process->inputs);
         // 执行推理
         ret = rknn_run(rknn_process->ctx, NULL);
@@ -158,8 +178,9 @@ int rknn_postprocess(
         out_zps,
         out_scales,
         detect_result_group,
-        rknn_process->label_path
+        NULL
     );
+    rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
 }
 
 void rknn_visualize(
@@ -217,9 +238,9 @@ static void dump_tensor_attr(rknn_tensor_attr* attr)
         shape_str += ", " + std::to_string(attr->dims[i]);
     }
 
-    printf("  index=%d, name=%s, n_dims=%d, dims=[%s], n_elems=%d, size=%d, w_stride = %d, size_with_stride=%d, fmt=%s, "
+    GST_DEBUG("  index=%d, name=%s, n_dims=%d, dims=[%s], n_elems=%d, size=%d, w_stride = %d, size_with_stride=%d, fmt=%s, "
            "type=%s, qnt_type=%s, "
-           "zp=%d, scale=%f\n",
+           "zp=%d, scale=%f",
         attr->index, attr->name, attr->n_dims, shape_str.c_str(), attr->n_elems, attr->size, attr->w_stride,
         attr->size_with_stride, get_format_string(attr->fmt), get_type_string(attr->type),
         get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
@@ -238,13 +259,13 @@ static unsigned char* load_data(FILE* fp, size_t ofst, size_t sz)
 
     ret = fseek(fp, ofst, SEEK_SET);
     if (ret != 0) {
-        printf("blob seek failure.\n");
+        printf("blob seek failure.");
         return NULL;
     }
 
     data = (unsigned char*)malloc(sz);
     if (data == NULL) {
-        printf("buffer malloc failure.\n");
+        printf("buffer malloc failure.");
         return NULL;
     }
     ret = fread(data, 1, sz, fp);
@@ -258,7 +279,7 @@ static unsigned char* load_model(const char* filename, int* model_size)
 
     fp = fopen(filename, "rb");
     if (NULL == fp) {
-        printf("Open file %s failed.\n", filename);
+        printf("Open file %s failed.", filename);
         return NULL;
     }
 
