@@ -75,3 +75,4 @@ docker/build-cache/
 log
 *.bmp
 output.*
+dumps

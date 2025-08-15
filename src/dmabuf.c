@@ -156,8 +156,8 @@ GstVideoBufferPool *dma_buffer_pool_new(GstVideoFormat format, gint width,
   guint min_buffers = 3;               // 示例最小缓冲区数
   guint max_buffers = 6;               // 0 表示无上限
   gsize buffer_size;
-
-  // 确保 dma heap 已打开
+  GST_DEBUG("dma_buffer_pool_new: width %d height %d", width, height);
+  // 确保 dma heap 已打开 
   if (!dmabuf_heap_open()) {
     GST_ERROR("Failed to open dmabuf heap.\n");
     goto error;

@@ -78,11 +78,10 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     // 设置原始图像尺寸
     rknn_engine->original_width = filter->sink_width;
     rknn_engine->original_height = filter->sink_height;
-
     filter->rknn_width = rknn_engine->model_width;
     filter->rknn_height = rknn_engine->model_height;
   }
-
+  GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d", filter->sink_width, filter->sink_height, filter->rknn_width, filter->rknn_height);
   // 计算缩放比例和填充
   float scale_w = (float)filter->rknn_width / filter->sink_width;
   float scale_h = (float)filter->rknn_height / filter->sink_height;
@@ -409,20 +408,24 @@ static gpointer rknn_engine_thread(gpointer data) {
     GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start infer", worker_id,
                      rknn_buffer->offset);
     rknn_inference(rknn_engine, 1);
-    save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data, 640, 640);
+    save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data, rknn_engine->model_width, rknn_engine->model_height);
+    rknn_dump_io(rknn_engine);
+    GST_DEBUG_OBJECT(filter, "Dumped npy");
+    rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output, rknn_engine->outputs);
+    // 将网络输出存到 npy
+
     // 后处理
-    detect_result_group_t detect_result_group;
-    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start postprocess",
-                     worker_id, rknn_buffer->offset);
-    rknn_postprocess(rknn_engine, 0.6, 0.45, &detect_result_group);
+    // detect_result_group_t detect_result_group;
+    // GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start postprocess",
+    //                  worker_id, rknn_buffer->offset);
+    // rknn_postprocess(rknn_engine, 0.6, 0.45, &detect_result_group);
 
     // 可视化
-    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start visualize", worker_id,
-                     rknn_buffer->offset);
+    // GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start visualize", worker_id, rknn_buffer->offset);
 
-    if (filter->draw_boxes) {
-      rknn_visualize(rknn_engine, raw_buffer, &detect_result_group);
-    }
+    // if (filter->draw_boxes) {
+    //   rknn_visualize(rknn_engine, raw_buffer, &detect_result_group);
+    // }
 
     GST_INFO_OBJECT(filter, "Thread %d offset %zu done", worker_id,
                     rknn_buffer->offset);

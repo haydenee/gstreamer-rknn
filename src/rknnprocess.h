@@ -46,6 +46,7 @@ void rknn_visualize(
     GstBuffer* output_buffer,
     detect_result_group_t* detect_result_group
 );
+void rknn_dump_io(struct RknnEngine* rknn_process);
 void rknn_release(struct RknnEngine* rknn_process);
 
 #ifdef __cplusplus

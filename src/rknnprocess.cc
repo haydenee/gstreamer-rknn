@@ -9,6 +9,7 @@
 #include "common_structs.h"
 #include "rknn_api.h"
 #include "rgaprocess.h"
+#include "cnpy/cnpy.h"
 
 
 GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
@@ -98,13 +99,17 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
     const rknn_tensor_attr attr = rknn_process->input_attrs[0];
     if (attr.fmt == RKNN_TENSOR_NCHW) {
         GST_DEBUG("model is NCHW input fmt");
+        channel = attr.dims[1];
+        height = attr.dims[2];
+        width = attr.dims[3];
     } else {
         GST_DEBUG("model is NHWC input fmt");
+        height = attr.dims[1];
+        width = attr.dims[2];
+        channel = attr.dims[3];
     }
     
-    channel = attr.dims[1];
-    height = attr.dims[2];
-    width = attr.dims[3];
+
 
     GST_DEBUG("model input height=%d, width=%d, channel=%d", height, width, channel);
 
@@ -164,7 +169,8 @@ int rknn_postprocess(
         out_scales.push_back(rknn_process->output_attrs[i].scale);
         out_zps.push_back(rknn_process->output_attrs[i].zp);
     }
-    return post_process(
+    
+    int result = post_process(
         (int8_t*)rknn_process->outputs[0].buf,
         (int8_t*)rknn_process->outputs[1].buf,
         (int8_t*)rknn_process->outputs[2].buf,
@@ -180,7 +186,9 @@ int rknn_postprocess(
         detect_result_group,
         NULL
     );
-    rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
+    
+    // rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
+    return result;
 }
 
 void rknn_visualize(
@@ -292,4 +300,112 @@ static unsigned char* load_model(const char* filename, int* model_size)
 
     *model_size = size;
     return data;
+}
+
+static void dump_tensor_data(const char* prefix, uint index, const rknn_tensor_attr* attr, const void* data, size_t size)
+{
+    // 构造形状字符串
+    std::string shape_str = "";
+    for (uint j = 0; j < attr->n_dims; j++) {
+        if (j > 0) shape_str += "x";
+        shape_str += std::to_string(attr->dims[j]);
+    }
+    
+    // 根据数据类型确定 numpy 数据类型
+    std::string dtype_str;
+    
+    switch (attr->type) {
+        case RKNN_TENSOR_INT8:
+            dtype_str = "int8";
+            break;
+        case RKNN_TENSOR_UINT8:
+            dtype_str = "uint8";
+            break;
+        case RKNN_TENSOR_INT16:
+            dtype_str = "int16";
+            break;
+        case RKNN_TENSOR_UINT16:
+            dtype_str = "uint16";
+            break;
+        case RKNN_TENSOR_INT32:
+            dtype_str = "int32";
+            break;
+        case RKNN_TENSOR_UINT32:
+            dtype_str = "uint32";
+            break;
+        case RKNN_TENSOR_FLOAT32:
+            dtype_str = "float32";
+            break;
+        case RKNN_TENSOR_FLOAT16:
+            dtype_str = "float16";
+            break;
+        default:
+            GST_WARNING("Unsupported tensor type: %d", attr->type);
+            return;
+    }
+    
+    // 构造文件名，包含 dtype 和 shape 信息
+    char filename[256];
+    snprintf(filename, sizeof(filename), "./dumps/%s_%d_%s_%s.npy", prefix, index, dtype_str.c_str(), shape_str.c_str());
+    
+    // 构造形状向量
+    std::vector<size_t> shape;
+    for (uint j = 0; j < attr->n_dims; j++) {
+        shape.push_back(attr->dims[j]);
+    }
+    
+    // 保存数据到 npy 文件
+    if (attr->type == RKNN_TENSOR_FLOAT16) {
+        // 特殊处理 float16，转换为 float32 保存
+        size_t num_elements = size / sizeof(uint16_t);
+        std::vector<float> converted_data(num_elements);
+        
+        // 简单的 float16 到 float32 转换（这里只是示例，实际转换可能更复杂）
+        uint16_t* src = (uint16_t*)data;
+        for (size_t j = 0; j < num_elements; j++) {
+            // 这是一个简化的转换，实际的 float16 到 float32 转换需要考虑指数和尾数
+            converted_data[j] = (float)src[j];
+        }
+        
+        cnpy::npy_save(filename, converted_data.data(), shape, "w");
+    } else {
+        // 直接保存其他类型的数据
+        cnpy::npy_save(filename, (char*)data, shape, "w");
+    }
+    
+    // 创建同名的 txt 文件，保存 zp 和 scale 信息
+    char txt_filename[256];
+    snprintf(txt_filename, sizeof(txt_filename), "./dumps/%s_%d_%s_%s.txt", prefix, index, dtype_str.c_str(), shape_str.c_str());
+    
+    FILE* txt_file = fopen(txt_filename, "w");
+    if (txt_file != NULL) {
+        fprintf(txt_file, "zp=%d\n", attr->zp);
+        fprintf(txt_file, "scale=%f\n", attr->scale);
+        fclose(txt_file);
+        GST_DEBUG("Saved %s tensor %d zp and scale to %s", prefix, index, txt_filename);
+    } else {
+        GST_ERROR("Failed to create txt file %s", txt_filename);
+    }
+    
+    GST_DEBUG("Saved %s tensor %d to %s", prefix, index, filename);
+}
+
+void rknn_dump_io(struct RknnEngine* rknn_process)
+{
+    // 创建 dumps 目录（如果不存在）
+    system("mkdir -p ./dumps");
+    
+    // Dump 输入张量
+    for (uint i = 0; i < rknn_process->io_num.n_input; i++) {
+        const rknn_tensor_attr attr = rknn_process->input_attrs[i];
+        const rknn_input input = rknn_process->inputs[i];
+        dump_tensor_data("input", i, &attr, input.buf, input.size);
+    }
+    
+    // Dump 输出张量
+    for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
+        const rknn_tensor_attr attr = rknn_process->output_attrs[i];
+        const rknn_output output = rknn_process->outputs[i];
+        dump_tensor_data("output", i, &attr, output.buf, output.size);
+    }
 }

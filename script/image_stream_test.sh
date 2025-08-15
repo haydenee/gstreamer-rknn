@@ -7,8 +7,8 @@ eval "gst-inspect-1.0 rknn"
 echo "=== 创建测试图片序列 ==="
 # 创建多个软连接到同一张图片来模拟多帧视频
 rm -f /tmp/frame_*.jpg
-for i in {0..4}; do
-    ln -s /root/gstreamer-rknn/test/test.jpg /tmp/frame_$(printf "%02d" $i).jpg
+for i in {0..0}; do
+    ln -s /root/gstreamer-rknn/test/test_640x352.jpg /tmp/frame_$(printf "%02d" $i).jpg
 done
 
 echo "=== cmd ==="

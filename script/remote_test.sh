@@ -38,7 +38,7 @@ ssh $REMOTE_HOST "cd $REMOTE_DIR && timeout 5 $TEST_SCRIPT > $LOG_FILE 2>&1 || t
 
 # 4. 使用 scp 下载日志文件到本地，并清理控制字符
 echo "4. 下载日志文件到本地..."
-rsync -avz  --remove-source-files --include="*.bmp" --include="*.mp4" --include="log" --include="output.*" --exclude="*"  $REMOTE_HOST:$REMOTE_DIR/ ./
+rsync -avz  --remove-source-files --include="*.bmp" --include="*.mp4" --include="log" --include="output.*" --include="dumps/*" --exclude="*"  $REMOTE_HOST:$REMOTE_DIR/ ./
 
 
 # 5. 清理控制字符（ANSI转义序列）
