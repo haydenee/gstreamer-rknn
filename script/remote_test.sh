@@ -11,6 +11,7 @@ REMOTE_DIR="/root/gstreamer-rknn"
 LOG_FILE="log"
 MP4_FILE="test.mp4"
 TEST_SCRIPT="./script/image_stream_test.sh"
+# TEST_SCRIPT="./build/test/yolo11pose_test"
 
 echo "=== 开始远程测试流程 ==="
 echo "远程主机: $REMOTE_HOST"
@@ -37,7 +38,7 @@ ssh $REMOTE_HOST "cd $REMOTE_DIR && timeout 5 $TEST_SCRIPT > $LOG_FILE 2>&1 || t
 
 # 4. 使用 scp 下载日志文件到本地，并清理控制字符
 echo "4. 下载日志文件到本地..."
-rsync -avz  --remove-source-files --include="*.bmp" --include="*.mp4" --include="log" --exclude="*"  $REMOTE_HOST:$REMOTE_DIR/ ./
+rsync -avz  --remove-source-files --include="*.bmp" --include="*.mp4" --include="log" --include="output.*" --exclude="*"  $REMOTE_HOST:$REMOTE_DIR/ ./
 
 
 # 5. 清理控制字符（ANSI转义序列）

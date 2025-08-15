@@ -404,7 +404,7 @@ static gpointer rknn_engine_thread(gpointer data) {
     GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start infer", worker_id,
                      rknn_buffer->offset);
     rknn_inference(rknn_engine, 1);
-
+    save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data, 640, 640);
     // 后处理
     detect_result_group_t detect_result_group;
     GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start postprocess",

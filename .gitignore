@@ -74,3 +74,4 @@ docker/build-cache/
 .cache
 log
 *.bmp
+output.*

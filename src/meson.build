@@ -13,11 +13,9 @@ configure_file(output : 'config.h', configuration : cdata)
 plugin_sources = [
   'gstrknn.c',
   'rgaprocess.cc',
-  # 'dmabuffer.c',
   'rknnprocess.cc',
   'postprocess.cc',
   'dmabuf.c',
-  'gstdmabufpool.c',
   ]
 
 library('gstrknn',
