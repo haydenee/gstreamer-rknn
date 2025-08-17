@@ -6,7 +6,6 @@
 
 #include "rknnprocess.h"
 #include "postprocess.h"
-#include "common_structs.h"
 #include "rknn_api.h"
 #include "rgaprocess.h"
 #include "cnpy/cnpy.h"
@@ -22,7 +21,7 @@ static void dump_tensor_attr(rknn_tensor_attr* attr);
 extern "C" {
 #endif
 
-
+static float boxes_exp[256];
 int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
 {
     int ret;
@@ -34,6 +33,7 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
     rknn_process->ctx = 0;
     
     // 如果提供了共享上下文且不为0，则复用它
+    bool is_first_init;
     if (shared_context != NULL && *shared_context != 0) {
         GST_DEBUG("Duplicating shared RKNN context");
         ret = rknn_dup_context(shared_context, &rknn_process->ctx);
@@ -41,6 +41,7 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
             GST_ERROR("rknn_dup_context error ret=%d", ret);
             return -1;
         }
+        is_first_init = false;
         // 复用上下文时不需要重新加载模型数据
         rknn_process->model_data = NULL;
     } else {
@@ -56,6 +57,7 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
             GST_ERROR("rknn_init error ret=%d", ret);
             return -1;
         }
+        is_first_init = true;
     }
 
     rknn_sdk_version version;
@@ -109,14 +111,12 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
         channel = attr.dims[3];
     }
     
-
-
     GST_DEBUG("model input height=%d, width=%d, channel=%d", height, width, channel);
 
     rknn_process->inputs = (rknn_input*)malloc(sizeof(rknn_input) * rknn_process->io_num.n_input);
     memset(rknn_process->inputs, 0, sizeof(rknn_input) * rknn_process->io_num.n_input);
     rknn_process->inputs[0].index = attr.index;
-    rknn_process->inputs[0].type = attr.type;
+    rknn_process->inputs[0].type = RKNN_TENSOR_UINT8;
     rknn_process->inputs[0].size = attr.size;
     rknn_process->inputs[0].pass_through = 0;
     rknn_process->inputs[0].fmt = attr.fmt;
@@ -136,22 +136,23 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
         rknn_process->outputs[i].size = attr.size;
     }
 
+    int zp = rknn_process->output_attrs[1].zp;
+    float scale = rknn_process->output_attrs[1].scale;
+    if (is_first_init) {
+        fill_exp_table(boxes_exp, zp, scale);
+
+    }
     return 0;
 }
 
-int rknn_inference(
-    struct RknnEngine* rknn_process,
-    int do_inference
-)
+int rknn_inference(struct RknnEngine* rknn_process)
 {
     int ret = 0;
+    // 执行推理
 
-    if (do_inference) {
-        rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input, rknn_process->inputs);
-        // 执行推理
-        ret = rknn_run(rknn_process->ctx, NULL);
-        ret = rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs, NULL);
-    }
+    rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input, rknn_process->inputs);
+    ret = rknn_run(rknn_process->ctx, NULL);
+    ret = rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs, NULL);
 
     return ret;
 }
@@ -159,64 +160,105 @@ int rknn_inference(
 int rknn_postprocess(
     struct RknnEngine* rknn_process,
     float box_conf_threshold,
-    float nms_threshold,
-    detect_result_group_t* detect_result_group
+    float nms_threshold
 )
 {
-    std::vector<float> out_scales;
-    std::vector<int32_t> out_zps;
-    for (uint i = 0; i < rknn_process->io_num.n_output; ++i) {
-        out_scales.push_back(rknn_process->output_attrs[i].scale);
-        out_zps.push_back(rknn_process->output_attrs[i].zp);
+    // Construct ResultData
+
+    // const string image_name = "input_0_int8_1x352x640x3";
+    // const string boxes_confs_name = "output_0_int8_1x1x4620";
+    // const string boxes_name = "output_1_int8_1x64x4620";
+    // const string kpts_confs_name = "output_2_int8_1x17x1x4620";
+    // const string kpts_name = "output_3_int8_1x17x2x4620";
+
+    ResultData data;
+    data.boxes_confs.data = (int8_t*)rknn_process->outputs[0].buf;
+    data.boxes_confs.zp = rknn_process->output_attrs[0].zp;
+    data.boxes_confs.scale = rknn_process->output_attrs[0].scale;
+
+    data.boxes.data = (int8_t*)rknn_process->outputs[1].buf;
+    data.boxes.zp = rknn_process->output_attrs[1].zp;
+    data.boxes.scale = rknn_process->output_attrs[1].scale;
+
+    data.kpts_confs.data = (int8_t*)rknn_process->outputs[2].buf;    
+    data.kpts_confs.zp = rknn_process->output_attrs[2].zp;
+    data.kpts_confs.scale = rknn_process->output_attrs[2].scale;
+
+    data.kpts.data = (int8_t*)rknn_process->outputs[3].buf;
+    data.kpts.zp = rknn_process->output_attrs[3].zp;
+    data.kpts.scale = rknn_process->output_attrs[3].scale;
+
+    data.height = rknn_process->model_height;
+    data.width = rknn_process->model_width;
+    data.count = data.height * data.width * 21 / 1024;
+    data.boxes_exp = boxes_exp;
+    post_process(box_conf_threshold, nms_threshold, &data);
+    
+    auto& r = rknn_process->results;
+    rknn_process->results_size = data.results.size();
+    float scale = rknn_process->scale_model_to_img;
+    int model_pad_left = rknn_process->model_pad_left;
+    int model_pad_top = rknn_process->model_pad_top;
+    int img_pad_left = rknn_process->img_pad_left;
+    int img_pad_top = rknn_process->img_pad_top;
+    for (int i = 0; i < rknn_process->results_size; i++) {
+        auto& person = data.results[i];
+        r[i][0] = (person.box.rect.x - model_pad_left) * scale - img_pad_left;
+        r[i][1] = (person.box.rect.y - model_pad_top) * scale - img_pad_top;
+        r[i][2] = person.box.rect.w * scale;
+        r[i][3] = person.box.rect.h * scale;
+        r[i][4] = person.box.conf;
+        for (int j = 0; j < 17; j++) {
+            r[i][5 + j * 3 + 0] = (person.kpts[j * 3 + 0] - model_pad_left) * scale + img_pad_left;
+            r[i][5 + j * 3 + 1] = (person.kpts[j * 3 + 1] - model_pad_top) * scale + img_pad_top;
+            r[i][5 + j * 3 + 2] = person.kpts[j * 3 + 2];
+        }
     }
     
-    int result = post_process(
-        (int8_t*)rknn_process->outputs[0].buf,
-        (int8_t*)rknn_process->outputs[1].buf,
-        (int8_t*)rknn_process->outputs[2].buf,
-        rknn_process->model_height,
-        rknn_process->model_width,
-        box_conf_threshold,
-        nms_threshold,
-        rknn_process->pads,
-        rknn_process->scale,
-        rknn_process->scale,
-        out_zps,
-        out_scales,
-        detect_result_group,
-        NULL
-    );
-    
-    // rknn_outputs_release(rknn_process->ctx, rknn_process->io_num.n_output, rknn_process->outputs);
-    return result;
+    return 0;
 }
 
+#define COLOR_GREEN     0xFF00FF00
+#define COLOR_BLUE      0xFFFF0000
+#define COLOR_RED       0xFF0000FF
+#define COLOR_YELLOW    0xFF00FFFF
+#define COLOR_ORANGE    0xFF0045FF
+#define COLOR_BLACK     0xFF000000
+#define COLOR_WHITE     0xFFFFFFFF
 void rknn_visualize(
     struct RknnEngine* rknn_process,
-    GstBuffer* output,
-    detect_result_group_t* detect_result_group)
+    GstBuffer* output)
 {
-    // GST_DEBUG("opencv %d %d %d", rknn_process->original_width, rknn_process->original_height, GST_ROUND_UP_16(rknn_process->original_width) * 3);
     rga_buffer_t rga_buf;
     gst_buffer_to_rga_buffer(output, &rga_buf);
-
-    // 画框和概率
-    char text[256];
-    for (int i = 0; i < detect_result_group->count; i++) {
-        detect_result_t* det_result = &(detect_result_group->results[i]);
-        sprintf(text, "%s %.1f%%", det_result->name, det_result->prop * 100);
-        GST_TRACE("%s @ (%d %d %d %d) %f", det_result->name, det_result->box.left, det_result->box.top,
-             det_result->box.right, det_result->box.bottom, det_result->prop);
-        int x1 = det_result->box.left;
-        int y1 = det_result->box.top;
-        int x2 = det_result->box.right;
-        int y2 = det_result->box.bottom;
-        im_rect rect;
-        rect.x = GST_ROUND_UP_2(x1);
-        rect.y = GST_ROUND_UP_2(y1);
-        rect.width = GST_ROUND_UP_2(x2 - x1);
-        rect.height = GST_ROUND_UP_2(y2 - y1);
-        imrectangle(rga_buf, rect, 0x00ff0000, 6);
+    GST_DEBUG("rknn_visualize");
+    // 画框
+    for (int i = 0; i < rknn_process->results_size; i++) {
+        float* data_entry = rknn_process->results[i];
+        float x1 = data_entry[0];
+        float y1 = data_entry[1];
+        float w = data_entry[2];
+        float h = data_entry[3];
+        float x2 = x1 + w;
+        float y2 = y1 + h;
+        // 需要横纵坐标都被2整除
+        int x1i = 2 * int(x1 / 2);
+        int x2i = 2 * int(x2 / 2);
+        int y1i = 2 * int(y1 / 2);
+        int y2i = 2 * int(y2 / 2);
+        im_rect rect = {x1i, y1i, x2i - x1i, y2i - y1i};
+        imrectangle(rga_buf, rect, COLOR_GREEN, 4);
+        GST_DEBUG("box %.2f @ (%.2f %.2f %.2f %.2f)", data_entry[4], x1, y1, x2, y2);
+        // 17 个关键点
+        for (int j = 0; j < 17; j++) {
+            float x = data_entry[j * 3 + 5];
+            float y = data_entry[j * 3 + 6];
+            int xi = 2 * int(x / 2);
+            int yi = 2 * int(y / 2);
+            im_rect rect = {xi - 4, yi - 4, 8, 8};
+            imrectangle(rga_buf, rect, COLOR_RED, 4);
+            GST_DEBUG("> point %.2f @ (%.2f, %.2f)", data_entry[j * 3 + 7], x, y);
+        }
     }
 }
 
@@ -379,8 +421,7 @@ static void dump_tensor_data(const char* prefix, uint index, const rknn_tensor_a
     
     FILE* txt_file = fopen(txt_filename, "w");
     if (txt_file != NULL) {
-        fprintf(txt_file, "zp=%d\n", attr->zp);
-        fprintf(txt_file, "scale=%f\n", attr->scale);
+        fprintf(txt_file, "%d %.8f", attr->zp, attr->scale);
         fclose(txt_file);
         GST_DEBUG("Saved %s tensor %d zp and scale to %s", prefix, index, txt_filename);
     } else {

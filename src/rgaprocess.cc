@@ -250,16 +250,19 @@ int raw_to_rknn(struct RknnEngine* engine, GstBuffer* src_buf, GstBuffer* dst_bu
     }
 
     // Get dimensions from rga_buffer_t
-    int width = rga_src_buf.width;
-    int height = rga_src_buf.height;
-    int new_w = engine->new_width;
-    int new_h = engine->new_height;
-    int offset_x = engine->pads.left;
-    int offset_y = engine->pads.top;
-    GST_DEBUG("Source dimensions: %dx%d", width, height);
+    int src_offset_x = engine->img_pad_left;
+    int src_offset_y = engine->img_pad_top;
+    int dst_offset_x = engine->model_pad_left;
+    int dst_offset_y = engine->model_pad_top;
+    int src_width = engine->img_width - engine->img_pad_left - engine->img_pad_right;
+    int src_height = engine->img_height - engine->img_pad_top - engine->img_pad_bottom;
+    int dst_width = engine->model_width - engine->model_pad_left - engine->model_pad_right;
+    int dst_height = engine->model_height - engine->model_pad_top - engine->model_pad_bottom;
+    GST_DEBUG("Source dimensions: %dx%d Destination dimensions %dx%d ", src_width, src_height, dst_width, dst_height);
 
-    im_rect src_rect = {0, 0, width, height};
-    im_rect dst_rect = {offset_x, offset_y, new_w, new_h};
+    im_rect src_rect = {src_offset_x, src_offset_y, src_width, src_height};
+    im_rect dst_rect = {dst_offset_x, dst_offset_y, dst_width, dst_height};
+    GST_DEBUG("Source rectangle: %d,%d,%d,%d Destination rectangle: %d,%d,%d,%d", src_rect.x, src_rect.y, src_rect.width, src_rect.height, dst_rect.x, dst_rect.y, dst_rect.width, dst_rect.height);
     // Use RGA to perform the format conversion
 
     GstMapInfo src_map, dst_map;

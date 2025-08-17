@@ -13,7 +13,6 @@
 #include <gst/video/gstvideopool.h>
 #include <math.h>
 
-#include "common_structs.h"
 #include "dmabuf.h"
 #include "gstrknn.h"
 #include "rgaprocess.h"
@@ -76,44 +75,66 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     }
 
     // 设置原始图像尺寸
-    rknn_engine->original_width = filter->sink_width;
-    rknn_engine->original_height = filter->sink_height;
-    filter->rknn_width = rknn_engine->model_width;
-    filter->rknn_height = rknn_engine->model_height;
+    rknn_engine->img_width = filter->img_width;
+    rknn_engine->img_height = filter->img_height;
+    filter->model_width = rknn_engine->model_width;
+    filter->model_height = rknn_engine->model_height;
   }
-  GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d", filter->sink_width, filter->sink_height, filter->rknn_width, filter->rknn_height);
+  GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d", filter->img_width, filter->img_height, filter->model_width, filter->model_height);
   // 计算缩放比例和填充
-  float scale_w = (float)filter->rknn_width / filter->sink_width;
-  float scale_h = (float)filter->rknn_height / filter->sink_height;
+  float scale_w = (float)filter->model_width / filter->img_width;
+  float scale_h = (float)filter->model_height / filter->img_height;
   float scale;
   int new_width, new_height;
-  int offset_left = 0, offset_top = 0;
+  int model_pad_left = 0;
+  int model_pad_top = 0;
+  int model_pad_right = 0;
+  int model_pad_bottom = 0;
+  int img_pad_left = 0;
+  int img_pad_top = 0;
+  int img_pad_right = 0;
+  int img_pad_bottom = 0;
 
   // 根据模式计算缩放比例
   if (g_strcmp0(filter->resize_mode, "crop") == 0) {
     // crop 模式：缩放到较长的边刚好足够长度，较短的边裁切掉一部分
     scale = fmax(scale_w, scale_h);
+    new_width = (int)(filter->model_width / scale);
+    new_height = (int)(filter->model_height / scale);
+    img_pad_left = (int)((filter->img_width - new_width) / 2);
+    img_pad_top = (int)((filter->img_height - new_height) / 2);
+    img_pad_right = filter->img_width - new_width - img_pad_left;
+    img_pad_bottom = filter->img_height - new_height - img_pad_top;
   } else {
     // 默认 pad 模式：缩放到较短的边有足够长度，较长的边可以填充
     scale = fmin(scale_w, scale_h);
+    new_width = (int)(filter->img_width * scale);
+    new_height = (int)(filter->img_height * scale);
+    model_pad_left = (int)((filter->model_width - new_width) / 2);
+    model_pad_top = (int)((filter->model_height - new_height) / 2);
+    model_pad_right = filter->model_width - new_width - model_pad_left;
+    model_pad_bottom = filter->model_height - new_height - model_pad_top;
   }
   
-  // 计算新尺寸
-  new_width = (int)(filter->sink_width * scale);
-  new_height = (int)(filter->sink_height * scale);
   
-  // 统一计算偏移量
-  // 对于 crop 模式，至少有一条边会贴合，另一条边可能需要裁切（负值）
-  // 对于 pad 模式，所有边都需要填充（正值）
-  offset_left = (filter->rknn_width - new_width) / 2;
-  offset_top = (filter->rknn_height - new_height) / 2;
-  
-  // 直接输出 offset_left 和 offset_top 的值，不使用条件判断
-  GST_DEBUG("init scale and %s: scale %.2f %dx%d offset (%d %d)", 
-            filter->resize_mode, scale, new_width, new_height, offset_left, offset_top);
+  for (int i = 0; i < filter->workers; i++) {
+    filter->rknn_engines[i]->model_pad_left = model_pad_left;
+    filter->rknn_engines[i]->model_pad_top = model_pad_top;
+    filter->rknn_engines[i]->model_pad_right = model_pad_right;
+    filter->rknn_engines[i]->model_pad_bottom = model_pad_bottom;
+    filter->rknn_engines[i]->img_pad_left = img_pad_left;
+    filter->rknn_engines[i]->img_pad_top = img_pad_top;
+    filter->rknn_engines[i]->img_pad_right = img_pad_right;
+    filter->rknn_engines[i]->img_pad_bottom = img_pad_bottom;
+    filter->rknn_engines[i]->scale_img_to_model = scale;
+    filter->rknn_engines[i]->scale_model_to_img = 1.0f / scale;
+  }
+  // 输出不同模式下的偏移量信息
+  GST_DEBUG("init scale and %s: scale %.2f %dx%d input_pad (%d %d) img_pad (%d %d)", 
+            filter->resize_mode, scale, new_width, new_height, model_pad_left, model_pad_top, img_pad_left, img_pad_top);
 
   GST_INFO_OBJECT(filter, "Initialized %d RKNN engines, model size: %dx%d",
-                  filter->workers, filter->rknn_width, filter->rknn_height);
+                  filter->workers, filter->model_width, filter->model_height);
 
   return TRUE;
 }
@@ -160,7 +181,7 @@ static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
     // 使用新的工具函数创建 RKNN 输入缓冲区池
     GError *error = NULL;
     filter->rknn_buffer_pool = dma_buffer_pool_new(
-        GST_VIDEO_FORMAT_RGB, filter->rknn_width, filter->rknn_height, 1, 1);
+        GST_VIDEO_FORMAT_RGB, filter->model_width, filter->model_height, 1, 1);
 
     if (!filter->rknn_buffer_pool) {
       GST_ERROR_OBJECT(filter, "Failed to create RKNN buffer pool: %s",
@@ -348,7 +369,7 @@ gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
 
   GST_DEBUG_OBJECT(filter, "Source format: %s, dimensions: %dx%d",
                    gst_video_format_to_string(filter->sink_format),
-                   filter->sink_width, filter->sink_height);
+                   filter->img_width, filter->img_height);
 
   if (raw_to_rknn(filter->rknn_engines[0], raw_buffer, rknn_buffer) != 0) {
     GST_ERROR_OBJECT(filter, "Failed to convert format to RGB");
@@ -407,25 +428,23 @@ static gpointer rknn_engine_thread(gpointer data) {
     // 执行推理
     GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start infer", worker_id,
                      rknn_buffer->offset);
-    rknn_inference(rknn_engine, 1);
-    save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data, rknn_engine->model_width, rknn_engine->model_height);
-    rknn_dump_io(rknn_engine);
-    GST_DEBUG_OBJECT(filter, "Dumped npy");
-    rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output, rknn_engine->outputs);
-    // 将网络输出存到 npy
+    rknn_inference(rknn_engine);
+    // save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data, rknn_engine->model_width, rknn_engine->model_height);
+    // rknn_dump_io(rknn_engine);
+    // GST_DEBUG_OBJECT(filter, "Dumped npy");
+
 
     // 后处理
-    // detect_result_group_t detect_result_group;
-    // GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start postprocess",
-    //                  worker_id, rknn_buffer->offset);
-    // rknn_postprocess(rknn_engine, 0.6, 0.45, &detect_result_group);
-
+    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start postprocess",
+                     worker_id, rknn_buffer->offset);
+    rknn_postprocess(rknn_engine, 0.6, 0.45);  
     // 可视化
-    // GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start visualize", worker_id, rknn_buffer->offset);
-
-    // if (filter->draw_boxes) {
-    //   rknn_visualize(rknn_engine, raw_buffer, &detect_result_group);
-    // }
+    GST_DEBUG_OBJECT(filter, "Thread %d offset %zu start visualize", worker_id, rknn_buffer->offset);
+    rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output, rknn_engine->outputs);
+    // 将网络输出存到 npy
+    if (filter->draw_boxes) {
+      rknn_visualize(rknn_engine, raw_buffer);
+    }
 
     GST_INFO_OBJECT(filter, "Thread %d offset %zu done", worker_id,
                     rknn_buffer->offset);
@@ -651,13 +670,13 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->mppjpegdec_offset_workaround = FALSE; // 默认值为 FALSE
   filter->draw_boxes = TRUE;                    // 默认值为 TRUE
   filter->resize_mode = g_strdup("pad");        // 默认值为 "pad"
-  filter->rknn_width = 0;
-  filter->rknn_height = 0;
+  filter->model_width = 0;
+  filter->model_height = 0;
 
   // 初始化输入格式信息
   filter->sink_format = GST_VIDEO_FORMAT_UNKNOWN;
-  filter->sink_width = 0;
-  filter->sink_height = 0;
+  filter->img_width = 0;
+  filter->img_height = 0;
 
   GST_DEBUG_OBJECT(filter, "Pointers initialized to NULL");
 
@@ -837,8 +856,8 @@ static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
     /* 解析并存储输入格式信息 */
     GstStructure *structure = gst_caps_get_structure(caps, 0);
     const gchar *format_str = gst_structure_get_string(structure, "format");
-    gst_structure_get_int(structure, "width", &filter->sink_width);
-    gst_structure_get_int(structure, "height", &filter->sink_height);
+    gst_structure_get_int(structure, "width", &filter->img_width);
+    gst_structure_get_int(structure, "height", &filter->img_height);
     // NV16/NV12 转 RGB 需要宽度 16 对齐，高度 2 对齐
     filter->sink_format = gst_video_format_from_string(format_str);
     // 目前的实现不需要更改 caps 了。

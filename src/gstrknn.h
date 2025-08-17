@@ -111,13 +111,13 @@ struct _GstPluginRknn {
     GstCaps* src_caps;
 
     struct RknnEngine** rknn_engines;
-    gint rknn_width;
-    gint rknn_height;
+    gint model_width;
+    gint model_height;
     
     // 输入格式信息
     GstVideoFormat sink_format;
-    gint sink_width;
-    gint sink_height;
+    gint img_width;
+    gint img_height;
 
     
     // 缓冲区池 - 用于替代直接创建缓冲区

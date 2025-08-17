@@ -1,19 +1,51 @@
-#ifndef _RKNN_YOLOV5_DEMO_POSTPROCESS_H_
-#define _RKNN_YOLOV5_DEMO_POSTPROCESS_H_
-
-#include <stdint.h>
+#pragma once
+#include <array>
 #include <vector>
-#include "common_structs.h"
+#include <cstdint>
 
-#define OBJ_CLASS_NUM 80
-#define NMS_THRESH 0.45
-#define BOX_THRESH 0.25
-#define PROP_BOX_SIZE (5 + OBJ_CLASS_NUM)
+#ifdef __cplusplus
+extern "C" {
+#endif 
+struct QuantArray {
+  int8_t* data;
+  int32_t zp;
+  float scale;
+};
+struct Rect {
+  float x;
+  float y;
+  float w;
+  float h;
+};
 
-int post_process(int8_t *input0, int8_t *input1, int8_t *input2, int model_in_h, int model_in_w,
-                 float conf_threshold, float nms_threshold, BOX_RECT pads, float scale_w, float scale_h,
-                 std::vector<int32_t> &qnt_zps, std::vector<float> &qnt_scales,
-                 detect_result_group_t *group, char *label_path);
+struct Box {
+  int index;
+  Rect rect;
+  float conf;
+};
 
-void deinitPostProcess();
-#endif //_RKNN_YOLOV5_DEMO_POSTPROCESS_H_
+struct Person {
+  Box box;
+  std::array<float, 51> kpts;
+};
+
+struct ResultData {
+  
+  int height;
+  int width;
+  int count;
+  QuantArray boxes_confs;
+  QuantArray boxes;
+  QuantArray kpts_confs;
+  QuantArray kpts;
+  std::vector<Box> filtered_boxes;
+  std::vector<Person> results;
+  float* boxes_exp;
+};
+
+void fill_exp_table(float* exp_table, int zp, float scale);
+void post_process(float conf_threshold, float nms_threshold, ResultData* data);
+
+#ifdef __cplusplus
+}
+#endif
