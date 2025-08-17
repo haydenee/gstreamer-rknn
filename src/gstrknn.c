@@ -80,7 +80,9 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     filter->model_width = rknn_engine->model_width;
     filter->model_height = rknn_engine->model_height;
   }
-  GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d", filter->img_width, filter->img_height, filter->model_width, filter->model_height);
+  GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d",
+            filter->img_width, filter->img_height, filter->model_width,
+            filter->model_height);
   // 计算缩放比例和填充
   float scale_w = (float)filter->model_width / filter->img_width;
   float scale_h = (float)filter->model_height / filter->img_height;
@@ -115,8 +117,7 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     model_pad_right = filter->model_width - new_width - model_pad_left;
     model_pad_bottom = filter->model_height - new_height - model_pad_top;
   }
-  
-  
+
   for (int i = 0; i < filter->workers; i++) {
     filter->rknn_engines[i]->model_pad_left = model_pad_left;
     filter->rknn_engines[i]->model_pad_top = model_pad_top;
@@ -130,11 +131,13 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     filter->rknn_engines[i]->scale_model_to_img = 1.0f / scale;
   }
   // 输出不同模式下的偏移量信息
-  GST_DEBUG("init scale and %s: scale %.2f %dx%d input_pad (%d %d) img_pad (%d %d)", 
-            filter->resize_mode, scale, new_width, new_height, model_pad_left, model_pad_top, img_pad_left, img_pad_top);
+  GST_DEBUG(
+      "init scale and %s: scale %.2f %dx%d input_pad (%d %d) img_pad (%d %d)",
+      filter->resize_mode, scale, new_width, new_height, model_pad_left,
+      model_pad_top, img_pad_left, img_pad_top);
 
-  GST_INFO("Initialized %d RKNN engines, model size: %dx%d",
-                  filter->workers, filter->model_width, filter->model_height);
+  GST_INFO("Initialized %d RKNN engines, model size: %dx%d", filter->workers,
+           filter->model_width, filter->model_height);
 
   return TRUE;
 }
@@ -183,7 +186,7 @@ static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
 
     if (!filter->rknn_buffer_pool) {
       GST_ERROR("Failed to create RKNN buffer pool: %s",
-                       error ? error->message : "Unknown error");
+                error ? error->message : "Unknown error");
       if (error) {
         g_error_free(error);
       }
@@ -204,8 +207,7 @@ static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
     g_snprintf(thread_name, sizeof(thread_name), "rknn-consumer-%d", i);
     filter->task_threads[i] =
         g_thread_new(thread_name, rknn_engine_thread, thread_data);
-    GST_DEBUG("Created RKNN consumer thread %d with name: %s", i,
-                    thread_name);
+    GST_DEBUG("Created RKNN consumer thread %d with name: %s", i, thread_name);
   }
 
   // 创建 output_collector_thread 线程
@@ -220,8 +222,7 @@ static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
 static void release_rknn_resources(GstPluginRknn *filter) {
   // 停止并清理多个任务线程
   if (filter->task_threads) {
-    GST_INFO("Stopping %d RKNN consumer threads",
-                    filter->workers);
+    GST_INFO("Stopping %d RKNN consumer threads", filter->workers);
 
     // 向每个线程发送 NULL buffer 作为停止信号
     for (int i = 0; i < filter->workers; i++) {
@@ -347,9 +348,8 @@ gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
   GST_DEBUG("raw_input before preprocess");
   if (filter->mppjpegdec_offset_workaround) {
     GstVideoMeta *meta = gst_buffer_get_video_meta(raw_buffer);
-    GST_DEBUG(
-        "Apply offset workaround to raw_input. Before %zu After %d",
-        meta->offset[1], meta->stride[0] * GST_ROUND_UP_16(meta->height));
+    GST_DEBUG("Apply offset workaround to raw_input. Before %zu After %d",
+              meta->offset[1], meta->stride[0] * GST_ROUND_UP_16(meta->height));
     meta->offset[1] = meta->stride[0] * GST_ROUND_UP_16(meta->height);
   }
   log_buffer_info(raw_buffer);
@@ -359,13 +359,13 @@ gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
       GST_BUFFER_POOL(filter->rknn_buffer_pool), &rknn_buffer, NULL);
   if (acquire_result != GST_FLOW_OK || !rknn_buffer) {
     GST_WARNING("Failed to acquire RKNN buffer from pool: %s",
-                       gst_flow_get_name(acquire_result));
+                gst_flow_get_name(acquire_result));
     goto error;
   }
 
   GST_DEBUG("Source format: %s, dimensions: %dx%d",
-                   gst_video_format_to_string(filter->sink_format),
-                   filter->img_width, filter->img_height);
+            gst_video_format_to_string(filter->sink_format), filter->img_width,
+            filter->img_height);
 
   if (raw_to_rknn(filter->rknn_engines[0], raw_buffer, rknn_buffer) != 0) {
     GST_ERROR("Failed to convert format to RGB");
@@ -401,16 +401,14 @@ static gpointer rknn_engine_thread(gpointer data) {
   while (TRUE) {
     GstBuffer *rknn_buffer = g_async_queue_pop(filter->rknn_input_queue);
     if (gst_buffer_get_size(rknn_buffer) == 0) {
-      GST_INFO("Thread %d recieved ending buffer, stoping",
-                      worker_id);
+      GST_INFO("Thread %d recieved ending buffer, stoping", worker_id);
       gst_buffer_unref(rknn_buffer);
       g_free(thread_data);
       return NULL;
     }
     GstBuffer *raw_buffer = g_async_queue_pop(filter->raw_input_queue);
 
-    GST_INFO("Thread %d recieved buffer %zu", worker_id,
-                    rknn_buffer->offset);
+    GST_INFO("Thread %d recieved buffer %zu", worker_id, raw_buffer->offset);
     GstMemory *rknn_mem = gst_buffer_peek_memory(rknn_buffer, 0);
     GstMapInfo rknn_map_info;
     GstMemory *raw_mem = gst_buffer_peek_memory(raw_buffer, 0);
@@ -423,27 +421,28 @@ static gpointer rknn_engine_thread(gpointer data) {
 
     // 执行推理
     GST_TRACE("Thread %d offset %zu start infer", worker_id,
-                     rknn_buffer->offset);
+              raw_buffer->offset);
     rknn_inference(rknn_engine);
-    // save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data, rknn_engine->model_width, rknn_engine->model_height);
+    // save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data,
+    // rknn_engine->model_width, rknn_engine->model_height);
     // rknn_dump_io(rknn_engine);
     // GST_DEBUG("Dumped npy");
 
-
     // 后处理
-    GST_TRACE("Thread %d offset %zu start postprocess",
-                     worker_id, rknn_buffer->offset);
-    rknn_postprocess(rknn_engine, 0.6, 0.45);  
+    GST_TRACE("Thread %d offset %zu start postprocess", worker_id,
+              raw_buffer->offset);
+    rknn_postprocess(rknn_engine, 0.6, 0.45);
     // 可视化
-    GST_TRACE("Thread %d offset %zu start visualize", worker_id, rknn_buffer->offset);
-    rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output, rknn_engine->outputs);
+    GST_TRACE("Thread %d offset %zu start visualize", worker_id,
+              raw_buffer->offset);
+    rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output,
+                         rknn_engine->outputs);
     // 将网络输出存到 npy
     if (filter->draw_boxes) {
       rknn_visualize(rknn_engine, raw_buffer);
     }
 
-    GST_INFO("Thread %d offset %zu done", worker_id,
-                    rknn_buffer->offset);
+    GST_INFO("Thread %d offset %zu done", worker_id, raw_buffer->offset);
 
     gst_memory_unmap(rknn_mem, &rknn_map_info);
     gst_memory_unmap(raw_mem, &rgb_map_info);
@@ -458,12 +457,10 @@ static gpointer push_thread(gpointer data) {
   while (TRUE) {
     // 从 rgb_output_queue 中取出 buffer
     GstBuffer *rgb_buf = g_async_queue_pop(filter->raw_output_queue);
-    GST_TRACE("Thread output recieved buffer offset %zu",
-                     rgb_buf->offset);
+    GST_TRACE("Thread output recieved buffer offset %zu", rgb_buf->offset);
     // 检查是否是停止信号
     if (gst_buffer_get_size(rgb_buf) == 0) {
-      GST_INFO(
-          "Output collector thread received ending buffer, stopping");
+      GST_INFO("Output collector thread received ending buffer, stopping");
       gst_buffer_unref(rgb_buf);
       return NULL;
     }
@@ -475,10 +472,10 @@ static gpointer push_thread(gpointer data) {
           "Buffer offset %zu matches next output offset, pushing directly",
           rgb_buf->offset);
       // 直接输出
-      GST_TRACE(
-          "Buffer offset %zu pushed, next output offset is now %zu",
-          rgb_buf->offset, filter->next_output_offset);
+      GST_TRACE("Buffer offset %zu pushed, next output offset is now %zu",
+                rgb_buf->offset, filter->next_output_offset);
       log_buffer_info(rgb_buf);
+      GST_INFO("Pushing buffer with offset %zu", rgb_buf->offset);
       gst_pad_push(filter->srcpad, rgb_buf);
       filter->next_output_offset++;
       // 检查 out_of_order_buffers 中是否有可以按顺序输出的 buffer
@@ -489,36 +486,37 @@ static gpointer push_thread(gpointer data) {
 
         if (buf->offset == filter->next_output_offset) {
           GST_TRACE("Found sequential buffer with offset %zu in "
-                           "out_of_order_buffers, pushing",
-                           buf->offset);
+                    "out_of_order_buffers, pushing",
+                    buf->offset);
           // 移除并输出
           filter->out_of_order_buffers =
               g_list_remove_link(filter->out_of_order_buffers, first);
           g_list_free_1(first);
           GST_TRACE("Sequential buffer with offset %zu pushed, next "
-                           "output offset is now %zu",
-                           buf->offset, filter->next_output_offset);
+                    "output offset is now %zu",
+                    buf->offset, filter->next_output_offset);
           log_buffer_info(rgb_buf);
+          GST_INFO("Pushing sequential buffer with offset %zu", buf->offset);
           gst_pad_push(filter->srcpad, buf);
           filter->next_output_offset++;
 
         } else {
           // 如果第一个 buffer 都不是下一个应该输出的，那么后面的也不会是
           GST_TRACE("Next buffer in out_of_order_buffers (offset %zu) "
-                           "is not sequential (expected %zu), breaking",
-                           buf->offset, filter->next_output_offset);
+                    "is not sequential (expected %zu), breaking",
+                    buf->offset, filter->next_output_offset);
           break;
         }
       }
     } else {
       GST_TRACE("Buffer offset %zu does not match next output offset "
-                       "%zu, storing in out_of_order_buffers",
-                       rgb_buf->offset, filter->next_output_offset);
+                "%zu, storing in out_of_order_buffers",
+                rgb_buf->offset, filter->next_output_offset);
       // 将 buffer 存储在 out_of_order_buffers 中
       filter->out_of_order_buffers = g_list_insert_sorted(
           filter->out_of_order_buffers, rgb_buf, buffer_offset_compare);
       GST_TRACE("Buffer with offset %zu stored in out_of_order_buffers",
-                       rgb_buf->offset);
+                rgb_buf->offset);
     }
   }
 
@@ -617,8 +615,8 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
   g_object_class_install_property(
       gobject_class, PROP_DRAW_BOXES,
       g_param_spec_boolean("draw-boxes", "Draw Boxes",
-                          "Enable drawing bounding boxes on output", TRUE,
-                          G_PARAM_READWRITE));
+                           "Enable drawing bounding boxes on output", TRUE,
+                           G_PARAM_READWRITE));
 
   GST_DEBUG("Resize mode property installed");
 
@@ -671,8 +669,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
 
   // Create sink pad
   filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
-  GST_DEBUG("Sink pad creation attempted, result: %p",
-                   filter->sinkpad);
+  GST_DEBUG("Sink pad creation attempted, result: %p", filter->sinkpad);
 
   if (!filter->sinkpad) {
     GST_ERROR("Failed to create sink pad");
@@ -697,8 +694,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
 
   // Create source pad
   filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
-  GST_DEBUG("Source pad creation attempted, result: %p",
-                   filter->srcpad);
+  GST_DEBUG("Source pad creation attempted, result: %p", filter->srcpad);
 
   if (!filter->srcpad) {
     GST_ERROR("Failed to create src pad");
@@ -750,13 +746,12 @@ static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
     GST_DEBUG("Setting mppjpegdec_offset_workaround property");
     filter->mppjpegdec_offset_workaround = g_value_get_boolean(value);
     GST_DEBUG("mppjpegdec_offset_workaround set to %s",
-                     filter->mppjpegdec_offset_workaround ? "TRUE" : "FALSE");
+              filter->mppjpegdec_offset_workaround ? "TRUE" : "FALSE");
     break;
   case PROP_DRAW_BOXES:
     GST_DEBUG("Setting draw_boxes property");
     filter->draw_boxes = g_value_get_boolean(value);
-    GST_DEBUG("draw_boxes set to %s",
-                     filter->draw_boxes ? "TRUE" : "FALSE");
+    GST_DEBUG("draw_boxes set to %s", filter->draw_boxes ? "TRUE" : "FALSE");
     break;
   case PROP_RESIZE_MODE:
     GST_DEBUG("Setting resize_mode property");
@@ -780,8 +775,7 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
 
   switch (prop_id) {
   case PROP_MODEL_PATH:
-    GST_DEBUG("Getting model_path property: %s",
-                     filter->model_path);
+    GST_DEBUG("Getting model_path property: %s", filter->model_path);
     g_value_set_string(value, filter->model_path);
     break;
   case PROP_WORKERS:
@@ -796,12 +790,11 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
     break;
   case PROP_DRAW_BOXES:
     GST_DEBUG("Getting draw_boxes property: %s",
-                     filter->draw_boxes ? "TRUE" : "FALSE");
+              filter->draw_boxes ? "TRUE" : "FALSE");
     g_value_set_boolean(value, filter->draw_boxes);
     break;
   case PROP_RESIZE_MODE:
-    GST_DEBUG("Getting resize_mode property: %s",
-                     filter->resize_mode);
+    GST_DEBUG("Getting resize_mode property: %s", filter->resize_mode);
     g_value_set_string(value, filter->resize_mode);
     break;
   default:
@@ -821,8 +814,8 @@ static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
 
   filter = GST_PLUGIN_RKNN(parent);
 
-  GST_DEBUG("Received %s event: %" GST_PTR_FORMAT,
-                   GST_EVENT_TYPE_NAME(event), event);
+  GST_DEBUG("Received %s event: %" GST_PTR_FORMAT, GST_EVENT_TYPE_NAME(event),
+            event);
 
   switch (GST_EVENT_TYPE(event)) {
   case GST_EVENT_CAPS: {
