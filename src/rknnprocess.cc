@@ -248,7 +248,7 @@ void rknn_visualize(
         int y2i = 2 * int(y2 / 2);
         im_rect rect = {x1i, y1i, x2i - x1i, y2i - y1i};
         imrectangle(rga_buf, rect, COLOR_GREEN, 4);
-        GST_DEBUG("box %.2f @ (%.2f %.2f %.2f %.2f)", data_entry[4], x1, y1, x2, y2);
+        GST_TRACE("box %.2f @ (%.2f %.2f %.2f %.2f)", data_entry[4], x1, y1, x2, y2);
         // 17 个关键点
         for (int j = 0; j < 17; j++) {
             float x = data_entry[j * 3 + 5];
@@ -257,7 +257,7 @@ void rknn_visualize(
             int yi = 2 * int(y / 2);
             im_rect rect = {xi - 4, yi - 4, 8, 8};
             imrectangle(rga_buf, rect, COLOR_RED, 4);
-            GST_DEBUG("> point %.2f @ (%.2f, %.2f)", data_entry[j * 3 + 7], x, y);
+            GST_TRACE("> point %.2f @ (%.2f, %.2f)", data_entry[j * 3 + 7], x, y);
         }
     }
 }
@@ -288,7 +288,7 @@ static void dump_tensor_attr(rknn_tensor_attr* attr)
         shape_str += ", " + std::to_string(attr->dims[i]);
     }
 
-    GST_DEBUG("  index=%d, name=%s, n_dims=%d, dims=[%s], n_elems=%d, size=%d, w_stride = %d, size_with_stride=%d, fmt=%s, "
+    GST_TRACE("  index=%d, name=%s, n_dims=%d, dims=[%s], n_elems=%d, size=%d, w_stride = %d, size_with_stride=%d, fmt=%s, "
            "type=%s, qnt_type=%s, "
            "zp=%d, scale=%f",
         attr->index, attr->name, attr->n_dims, shape_str.c_str(), attr->n_elems, attr->size, attr->w_stride,
@@ -423,12 +423,12 @@ static void dump_tensor_data(const char* prefix, uint index, const rknn_tensor_a
     if (txt_file != NULL) {
         fprintf(txt_file, "%d %.8f", attr->zp, attr->scale);
         fclose(txt_file);
-        GST_DEBUG("Saved %s tensor %d zp and scale to %s", prefix, index, txt_filename);
+        GST_TRACE("Saved %s tensor %d zp and scale to %s", prefix, index, txt_filename);
     } else {
         GST_ERROR("Failed to create txt file %s", txt_filename);
     }
     
-    GST_DEBUG("Saved %s tensor %d to %s", prefix, index, filename);
+    GST_TRACE("Saved %s tensor %d to %s", prefix, index, filename);
 }
 
 void rknn_dump_io(struct RknnEngine* rknn_process)

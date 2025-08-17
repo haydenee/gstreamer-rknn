@@ -305,7 +305,7 @@ void log_buffer_info(GstBuffer *buf) {
       
       // 尝试映射内存以获取更多信息
       if (gst_memory_map(mem, &map_info, GST_MAP_READ)) {
-        GST_DEBUG("  Memory block %u - Size: %" G_GSIZE_FORMAT
+        GST_TRACE("  Memory block %u - Size: %" G_GSIZE_FORMAT
                   ", Maxsize: %" G_GSIZE_FORMAT
                   ", Offset: %" G_GSIZE_FORMAT
                   ", Allocator: %s"
@@ -325,12 +325,12 @@ void log_buffer_info(GstBuffer *buf) {
         // 尝试获取 DMA-BUF 特定信息
         if (mem->allocator && g_strcmp0(GST_OBJECT_NAME(mem->allocator), "GstDmaBufAllocator") == 0) {
           gint fd = gst_dmabuf_memory_get_fd(mem);
-          GST_DEBUG("    DMA-BUF FD: %d", fd);
+          GST_TRACE("    DMA-BUF FD: %d", fd);
         }
         
         gst_memory_unmap(mem, &map_info);
       } else {
-        GST_DEBUG("  Memory block %u - Size: %" G_GSIZE_FORMAT
+        GST_TRACE("  Memory block %u - Size: %" G_GSIZE_FORMAT
                   ", Maxsize: %" G_GSIZE_FORMAT
                   ", Offset: %" G_GSIZE_FORMAT
                   ", Allocator: %s"
@@ -344,7 +344,7 @@ void log_buffer_info(GstBuffer *buf) {
                   mem->parent);
       }
     } else {
-      GST_DEBUG("  Memory block %u - NULL", i);
+      GST_TRACE("  Memory block %u - NULL", i);
     }
   }
 
@@ -363,7 +363,7 @@ void log_buffer_info(GstBuffer *buf) {
 
     // 打印每个平面的 stride 信息
     for (guint i = 0; i < n_planes && i < GST_VIDEO_MAX_PLANES; i++) {
-      GST_DEBUG("  Plane %u - Offset: %" G_GSIZE_FORMAT ", Stride: %d", i,
+      GST_TRACE("  Plane %u - Offset: %" G_GSIZE_FORMAT ", Stride: %d", i,
                 meta->offset[i], meta->stride[i]);
     }
   }

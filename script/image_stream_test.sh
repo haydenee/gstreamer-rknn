@@ -29,7 +29,7 @@ CMD="gst-launch-1.0 -e \
 echo "$CMD"
 
 #export GST_DEBUG=*:1,rknn:3,mpp:7,mppenc:7,mpph264enc:7:exif-tags:1
-export GST_DEBUG=*:0,rknn:1
+export GST_DEBUG=*:0,rknn:4
 export GST_MPP_NO_RGA=1
 export ROCKCHIP_RGA_LOG=0
 export mpp_log_level=7

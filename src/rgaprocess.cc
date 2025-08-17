@@ -190,8 +190,8 @@ int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
     // 加了个选项 mppjpegdec_offset_workaround 修了。
     gint hstride = meta->n_planes > 1 ? meta->offset[1] / meta->stride[0] : height;
 
-    GST_DEBUG("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
-    GST_DEBUG("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
+    GST_TRACE("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
+    GST_TRACE("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
     RgaSURF_FORMAT rga_format = gst_to_rga_format(format);
     if (rga_format == RK_FORMAT_UNKNOWN) {
         return -1;
@@ -199,7 +199,7 @@ int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
     
     // Assuming height is hstride.
     *rga_buf = wrapbuffer_fd_t(fd, width, height, wstride, hstride, rga_format);
-    GST_LOG("Wrapping: fd:%d width:%d height:%d wstride:%d hstride:%d format:%d", fd, width, height, wstride, hstride, (int)rga_format);
+    GST_DEBUG("Wrapping: fd:%d width:%d height:%d wstride:%d hstride:%d format:%d", fd, width, height, wstride, hstride, (int)rga_format);
     return 0;
 }
 
@@ -237,7 +237,7 @@ int raw_to_rknn(struct RknnEngine* engine, GstBuffer* src_buf, GstBuffer* dst_bu
     rga_buffer_t rga_src_buf;
     rga_buffer_t rga_dst_buf;
 
-    GST_LOG("Converting buffer format using RGA");
+    GST_DEBUG("Converting buffer format using RGA");
 
     // Convert GstBuffer to rga_buffer_t
     if (gst_buffer_to_rga_buffer(src_buf, &rga_src_buf) != 0) {
@@ -275,7 +275,7 @@ int raw_to_rknn(struct RknnEngine* engine, GstBuffer* src_buf, GstBuffer* dst_bu
         return -1;
     }
     
-    GST_LOG("Performing RGA format conversion");
+    GST_DEBUG("Performing RGA format conversion");
     int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
     if (ret != IM_STATUS_SUCCESS) {
         GST_ERROR("RGA format conversion failed with error code: %d", ret);
@@ -283,7 +283,7 @@ int raw_to_rknn(struct RknnEngine* engine, GstBuffer* src_buf, GstBuffer* dst_bu
     }
     gst_buffer_unmap(src_buf, &src_map);
     gst_buffer_unmap(dst_buf, &dst_map);
-    GST_LOG("Format conversion completed successfully");
+    GST_DEBUG("Format conversion completed successfully");
     return 0;
 }
 
