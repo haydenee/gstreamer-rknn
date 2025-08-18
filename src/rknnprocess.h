@@ -5,6 +5,18 @@
 
 #define MAX_PERSON 128
 
+struct RknnMeta {
+  GstClockTime start_time;
+  GstClockTime preprocess_time;
+  GstClockTime queue_time;
+  GstClockTime infer_time;
+  GstClockTime postprocess_time;
+  GstClockTime visualize_time;
+  GstClockTime end_time;
+
+  float results[MAX_PERSON][56];
+  int results_size;
+};
 struct RknnEngine {
   // loading
   int worker_id;
@@ -38,6 +50,8 @@ struct RknnEngine {
   float results[MAX_PERSON][56];
   int results_size;
 };
+
+
 
 #ifdef __cplusplus
 extern "C" {
