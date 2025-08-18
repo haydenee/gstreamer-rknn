@@ -1,0 +1,542 @@
+GstMeta
+The GstMeta structure should be included as the first member of a GstBuffer metadata structure. The structure defines the API of the metadata and should be accessible to all elements using the metadata.
+
+A metadata API is registered with gst_meta_api_type_register which takes a name for the metadata API and some tags associated with the metadata. With gst_meta_api_type_has_tag one can check if a certain metadata API contains a given tag.
+
+Multiple implementations of a metadata API can be registered. To implement a metadata API, gst_meta_register should be used. This function takes all parameters needed to create, free and transform metadata along with the size of the metadata. The function returns a GstMetaInfo structure that contains the information for the implementation of the API.
+
+A specific implementation can be retrieved by name with gst_meta_get_info.
+
+See GstBuffer for how the metadata can be added, retrieved and removed from buffers.
+
+GstCustomMeta 
+Extra custom metadata. The structure field is the same as returned by gst_custom_meta_get_structure.
+
+Since 1.24 it can be serialized using gst_meta_serialize and gst_meta_deserialize, but only if the GstStructure does not contain any fields that cannot be serialized, see GST_SERIALIZE_FLAG_STRICT.
+
+Members
+meta (GstMeta) – parent GstMeta
+structure (GstStructure *) – GstStructure containing custom metadata.
+Since : 1.20
+
+Methods
+gst_custom_meta_get_structure 
+GstStructure *
+gst_custom_meta_get_structure (GstCustomMeta * meta)
+Retrieve the GstStructure backing a custom meta, the structure's mutability is conditioned to the writability of the GstBuffer meta is attached to.
+
+Parameters:
+
+meta – No description available
+Returns ( [transfer: none]) – the GstStructure backing meta
+Since : 1.20
+
+gst_custom_meta_has_name 
+gboolean
+gst_custom_meta_has_name (GstCustomMeta * meta,
+                          const gchar * name)
+Checks whether the name of the custom meta is name
+
+Parameters:
+
+meta – No description available
+name – No description available
+Returns – Whether name is the name of the custom meta
+Since : 1.20
+
+GstMeta 
+Base structure for metadata. Custom metadata will put this structure as the first member of their structure.
+
+Members
+flags (GstMetaFlags) – extra flags for the metadata
+info (const GstMetaInfo *) – pointer to the GstMetaInfo
+Methods
+gst_meta_compare_seqnum 
+gint
+gst_meta_compare_seqnum (const GstMeta * meta1,
+                         const GstMeta * meta2)
+Meta sequence number compare function. Can be used as GCompareFunc or a GCompareDataFunc.
+
+Parameters:
+
+meta1 – a GstMeta
+meta2 – a GstMeta
+Returns – a negative number if meta1 comes before meta2, 0 if both metas have an equal sequence number, or a positive integer if meta1 comes after meta2.
+Since : 1.16
+
+gst_meta_get_seqnum 
+guint64
+gst_meta_get_seqnum (const GstMeta * meta)
+Gets seqnum for this meta.
+
+Parameters:
+
+meta – a GstMeta
+Returns – No description available
+Since : 1.16
+
+gst_meta_serialize 
+gboolean
+gst_meta_serialize (const GstMeta * meta,
+                    GstByteArrayInterface * data)
+Serialize meta into a format that can be stored or transmitted and later deserialized by gst_meta_deserialize.
+
+This is only supported for meta that implements serialize_func, FALSE is returned otherwise.
+
+Upon failure, data->data pointer could have been reallocated, but data->len won't be modified. This is intended to be able to append multiple metas into the same GByteArray.
+
+Since serialization size is often the same for every buffer, caller may want to remember the size of previous data to preallocate the next.
+
+Parameters:
+
+meta – a GstMeta
+data – GstByteArrayInterface to append serialization data
+Returns – TRUE on success, FALSE otherwise.
+Since : 1.24
+
+gst_meta_serialize_simple 
+gboolean
+gst_meta_serialize_simple (const GstMeta * meta,
+                           GByteArray * data)
+Same as gst_meta_serialize but with a GByteArray instead of GstByteArrayInterface.
+
+Parameters:
+
+meta – a GstMeta
+data – GByteArray to append serialization data
+Returns – TRUE on success, FALSE otherwise.
+Since : 1.24
+
+Functions
+gst_meta_api_type_aggregate_params 
+gboolean
+gst_meta_api_type_aggregate_params (GType api,
+                                    GstStructure ** aggregated_params,
+                                    const GstStructure * params0,
+                                    const GstStructure * params1)
+When a element like tee decides the allocation, each downstream element may fill different parameters and pass them to gst_query_add_allocation_meta. In order to keep these parameters, a merge operation is needed. This aggregate function can combine the parameters from params0 and param1, and write the result back into aggregated_params.
+
+Parameters:
+
+api – the GType of the API for which the parameters are being aggregated.
+aggregated_params – This structure will be updated with the combined parameters from both params0 and params1.
+params0 – a GstStructure containing the new parameters to be aggregated.
+params1 – a GstStructure containing the new parameters to be aggregated.
+Returns – TRUE if the parameters were successfully aggregated, FALSE otherwise.
+Since : 1.26
+
+gst_meta_api_type_get_tags 
+const gchar*const **
+gst_meta_api_type_get_tags (GType api)
+Parameters:
+
+api – an API
+Returns ( [transfer: none][arrayzero-terminated=1][element-typeutf8]) – an array of tags as strings.
+Since : 1.2
+
+gst_meta_api_type_has_tag 
+gboolean
+gst_meta_api_type_has_tag (GType api,
+                           GQuark tag)
+Check if api was registered with tag.
+
+Parameters:
+
+api – an API
+tag – the tag to check
+Returns – TRUE if api was registered with tag.
+gst_meta_api_type_register 
+GType
+gst_meta_api_type_register (const gchar * api,
+                            const gchar ** tags)
+Register and return a GType for the api and associate it with tags.
+
+Parameters:
+
+api – an API to register
+tags ( [arrayzero-terminated=1]) – tags for api
+Returns – a unique GType for api.
+gst_meta_api_type_set_params_aggregator 
+gst_meta_api_type_set_params_aggregator (GType api,
+                                         GstAllocationMetaParamsAggregator aggregator)
+This function sets the aggregator function for a specific API type.
+
+Parameters:
+
+api – the GType of the API for which the aggregator function is being set.
+aggregator – the aggregator function to be associated with the given API type.
+Since : 1.26
+
+gst_meta_api_type_tags_contain_only 
+gboolean
+gst_meta_api_type_tags_contain_only (GType api,
+                                     const gchar ** valid_tags)
+Parameters:
+
+api – an API
+valid_tags ( [arrayzero-terminated=1][element-typeutf8]) – a list of valid tags
+Returns – TRUE if api only contains tags from valid_tags.
+Since : 1.28
+
+gst_meta_deserialize 
+GstMeta *
+gst_meta_deserialize (GstBuffer * buffer,
+                      const guint8 * data,
+                      gsize size,
+                      guint32 * consumed)
+Recreate a GstMeta from serialized data returned by gst_meta_serialize and add it to buffer.
+
+Note that the meta must have been previously registered by calling one of gst_*_meta_get_info () functions.
+
+consumed is set to the number of bytes that can be skipped from data to find the next meta serialization, if any. In case of parsing error that does not allow to determine that size, consumed is set to 0.
+
+Parameters:
+
+buffer – a GstBuffer
+data – serialization data obtained from gst_meta_serialize
+size – size of data
+consumed ( [out]) – total size used by this meta, could be less than size
+Returns ( [transfer: none][nullable]) – the metadata owned by buffer, or NULL.
+Since : 1.24
+
+gst_meta_get_info 
+const GstMetaInfo *
+gst_meta_get_info (const gchar * impl)
+Lookup a previously registered meta info structure by its implementation name impl.
+
+Parameters:
+
+impl – the name
+Returns ( [transfer: none][nullable]) – a GstMetaInfo with impl, or NULL when no such metainfo exists.
+gst_meta_register 
+const GstMetaInfo *
+gst_meta_register (GType api,
+                   const gchar * impl,
+                   gsize size,
+                   GstMetaInitFunction init_func,
+                   GstMetaFreeFunction free_func,
+                   GstMetaTransformFunction transform_func)
+Register a new GstMeta implementation.
+
+The same info can be retrieved later with gst_meta_get_info by using impl as the key.
+
+Parameters:
+
+api – the type of the GstMeta API
+impl – the name of the GstMeta implementation
+size – the size of the GstMeta structure
+init_func – a GstMetaInitFunction
+free_func – a GstMetaFreeFunction
+transform_func – a GstMetaTransformFunction
+Returns ( [transfer: none]) – a GstMetaInfo that can be used to access metadata.
+gst_meta_register_custom 
+const GstMetaInfo *
+gst_meta_register_custom (const gchar * name,
+                          const gchar ** tags,
+                          GstCustomMetaTransformFunction transform_func,
+                          gpointer user_data,
+                          GDestroyNotify destroy_data)
+Register a new custom GstMeta implementation, backed by an opaque structure holding a GstStructure.
+
+The registered info can be retrieved later with gst_meta_get_info by using name as the key.
+
+The backing GstStructure can be retrieved with gst_custom_meta_get_structure, its mutability is conditioned by the writability of the buffer the meta is attached to.
+
+When transform_func is NULL, the meta and its backing GstStructure will always be copied when the transform operation is copy, other operations are discarded, copy regions are ignored.
+
+Parameters:
+
+name – the name of the GstMeta implementation
+tags ( [arrayzero-terminated=1]) – tags for api
+transform_func ( [scope notified][nullable][closure]) – a GstMetaTransformFunction
+user_data – user data passed to transform_func
+destroy_data – GDestroyNotify for user_data
+Returns ( [transfer: none]) – a GstMetaInfo that can be used to access metadata.
+Since : 1.20
+
+gst_meta_register_custom_simple 
+const GstMetaInfo *
+gst_meta_register_custom_simple (const gchar * name)
+Simplified version of gst_meta_register_custom, with no tags and no transform function.
+
+Parameters:
+
+name – the name of the GstMeta implementation
+Returns ( [transfer: none]) – a GstMetaInfo that can be used to access metadata.
+Since : 1.24
+
+GstMetaInfo 
+The GstMetaInfo provides information about a specific metadata structure.
+
+Members
+api (GType) – tag identifying the metadata structure and api
+type (GType) – type identifying the implementor of the api
+size (gsize) – size of the metadata
+init_func (GstMetaInitFunction) – function for initializing the metadata
+free_func (GstMetaFreeFunction) – function for freeing the metadata
+transform_func (GstMetaTransformFunction) – function for transforming the metadata
+serialize_func (GstMetaSerializeFunction) – Function for serializing the metadata, or NULL if not supported by this meta.
+deserialize_func (GstMetaDeserializeFunction) – Function for deserializing the metadata, or NULL if not supported by this meta.
+clear_func (GstMetaClearFunction) – Function for clearing the metadata, or NULL if not supported by this meta. This is called by the buffer pool when a buffer is returned for pooled metas.
+Methods
+gst_meta_info_is_custom 
+gboolean
+gst_meta_info_is_custom (const GstMetaInfo * info)
+Parameters:
+
+info – No description available
+Returns – whether info was registered as a GstCustomMeta with gst_meta_register_custom
+Since : 1.20
+
+gst_meta_info_register 
+const GstMetaInfo *
+gst_meta_info_register (GstMetaInfo * info)
+Registers a new meta.
+
+Use the structure returned by gst_meta_info_new, it consumes it and the structure shouldnt be used after. The one returned by the function can be kept.
+
+Parameters:
+
+info ( [transfer: full]) – a new GstMetaInfo created by gst_meta_info_new
+Returns ( [transfer: none]) – the registered meta
+Since : 1.24
+
+Functions
+gst_meta_info_new 
+GstMetaInfo *
+gst_meta_info_new (GType api,
+                   const gchar * impl,
+                   gsize size)
+Creates a new structure that needs to be filled before being registered. This structure should filled and then registered with gst_meta_info_register.
+
+Example:
+
+const GstMetaInfo *
+gst_my_meta_get_info (void)
+{
+  static const GstMetaInfo *meta_info = NULL;
+
+  if (g_once_init_enter ((GstMetaInfo **) & meta_info)) {
+    GstMetaInfo *info = gst_meta_info_new (
+      gst_my_meta_api_get_type (),
+        "GstMyMeta",
+       sizeof (GstMyMeta));
+    const GstMetaInfo *meta = NULL;
+
+    info->init_func = my_meta_init;
+    info->free_func = my_meta_free;
+    info->transform_func = my_meta_transform;
+    info->serialize_func = my_meta_serialize;
+    info->deserialize_func = my_meta_deserialize;
+    meta = gst_meta_info_register (info);
+    g_once_init_leave ((GstMetaInfo **) & meta_info, (GstMetaInfo *) meta);
+  }
+
+  return meta_info;
+}
+Parameters:
+
+api – the type of the GstMeta API
+impl – the name of the GstMeta implementation
+size – the size of the GstMeta structure
+Returns – a new GstMetaInfo that needs to be filled
+Since : 1.24
+
+GstMetaTransformCopy 
+Extra data passed to a "gst-copy" transform GstMetaTransformFunction.
+
+Members
+region (gboolean) – TRUE if only region is copied
+offset (gsize) – the offset to copy, 0 if region is FALSE, otherwise > 0
+size (gsize) – the size to copy, -1 or the buffer size when region is FALSE
+Function Macros
+GST_META_CAST 
+#define GST_META_CAST(meta)   ((GstMeta *)(meta))
+GST_META_FLAGS 
+#define GST_META_FLAGS(meta)  (GST_META_CAST (meta)->flags)
+A flags word containing GstMetaFlags flags set on meta
+
+Parameters:
+
+meta – a GstMeta.
+GST_META_FLAG_IS_SET 
+#define GST_META_FLAG_IS_SET(meta,flag)        !!(GST_META_FLAGS (meta) & (flag))
+Gives the status of a specific flag on a metadata.
+
+Parameters:
+
+meta – a GstMeta.
+flag – the GstMetaFlags to check.
+GST_META_FLAG_SET 
+#define GST_META_FLAG_SET(meta,flag)           (GST_META_FLAGS (meta) |= (flag))
+Sets a metadata flag on a metadata.
+
+Parameters:
+
+meta – a GstMeta.
+flag – the GstMetaFlags to set.
+GST_META_FLAG_UNSET 
+#define GST_META_FLAG_UNSET(meta,flag)         (GST_META_FLAGS (meta) &= ~(flag))
+Clears a metadata flag.
+
+Parameters:
+
+meta – a GstMeta.
+flag – the GstMetaFlags to clear.
+GST_META_TRANSFORM_IS_COPY 
+#define GST_META_TRANSFORM_IS_COPY(type) ((type) == _gst_meta_transform_copy)
+Check if the transform type is a copy transform
+
+Parameters:
+
+type – a transform type
+Enumerations
+GstMetaFlags 
+Extra metadata flags.
+
+Members
+GST_META_FLAG_NONE (0) – no flags
+GST_META_FLAG_READONLY (1) – metadata should not be modified
+GST_META_FLAG_POOLED (2) – metadata is managed by a bufferpool
+GST_META_FLAG_LOCKED (4) – metadata should not be removed
+GST_META_FLAG_LAST (65536) – additional flags can be added starting from this flag.
+Constants
+GST_META_TAG_MEMORY_REFERENCE_STR 
+#define GST_META_TAG_MEMORY_REFERENCE_STR "memory-reference"
+This metadata stays relevant until a deep copy is made.
+
+Since : 1.20.4
+
+GST_META_TAG_MEMORY_STR 
+#define GST_META_TAG_MEMORY_STR "memory"
+This metadata stays relevant as long as memory layout is unchanged. In hindsight, this tag should have been called "memory-layout".
+
+Since : 1.2
+
+Callbacks
+GstAllocationMetaParamsAggregator 
+gboolean
+(*GstAllocationMetaParamsAggregator) (GstStructure ** aggregated_params,
+                                      const GstStructure * params0,
+                                      const GstStructure * params1)
+The aggregator function will combine the parameters from params0 and param1 and write the result back into aggregated_params.
+
+Parameters:
+
+aggregated_params – This structure will be updated with the combined parameters from both params0 and params1.
+params0 – a GstStructure containing the new parameters to be aggregated.
+params1 – a GstStructure containing the new parameters to be aggregated.
+Returns – TRUE if the parameters were successfully aggregated, FALSE otherwise.
+Since : 1.26
+
+GstCustomMetaTransformFunction 
+gboolean
+(*GstCustomMetaTransformFunction) (GstBuffer * transbuf,
+                                   GstCustomMeta * meta,
+                                   GstBuffer * buffer,
+                                   GQuark type,
+                                   gpointer data,
+                                   gpointer user_data)
+Function called for each meta in buffer as a result of performing a transformation that yields transbuf. Additional type specific transform data is passed to the function as data.
+
+Implementations should check the type of the transform and parse additional type specific fields in data that should be used to update the metadata on transbuf.
+
+Parameters:
+
+transbuf – a GstBuffer
+meta – a GstCustomMeta
+buffer – a GstBuffer
+type – the transform type
+data – transform specific data.
+user_data – user data passed when registering the meta
+Returns – TRUE if the transform could be performed
+Since : 1.20
+
+GstMetaClearFunction 
+(*GstMetaClearFunction) (GstBuffer * buffer,
+                         GstMeta * meta)
+Clears the content of the meta. This will be called by the GstBufferPool when a pooled buffer is returned.
+
+Parameters:
+
+buffer – a GstBuffer
+meta – a GstMeta
+Since : 1.24
+
+GstMetaDeserializeFunction 
+GstMeta *
+(*GstMetaDeserializeFunction) (const GstMetaInfo * info,
+                               GstBuffer * buffer,
+                               const guint8 * data,
+                               gsize size,
+                               guint8 version)
+Recreate a GstMeta from serialized data returned by GstMetaSerializeFunction and add it to buffer.
+
+Parameters:
+
+info – GstMetaInfo of the meta
+buffer – a GstBuffer
+data – data obtained from GstMetaSerializeFunction
+size – size of data to avoid buffer overflow
+version – No description available
+Returns ( [transfer: none][nullable]) – the metadata owned by buffer, or NULL.
+Since : 1.24
+
+GstMetaFreeFunction 
+(*GstMetaFreeFunction) (GstMeta * meta,
+                        GstBuffer * buffer)
+Function called when meta is freed in buffer.
+
+Parameters:
+
+meta – a GstMeta
+buffer – a GstBuffer
+GstMetaInitFunction 
+gboolean
+(*GstMetaInitFunction) (GstMeta * meta,
+                        gpointer params,
+                        GstBuffer * buffer)
+Function called when meta is initialized in buffer.
+
+Parameters:
+
+meta – a GstMeta
+params – parameters passed to the init function
+buffer – a GstBuffer
+Returns – No description available
+GstMetaSerializeFunction 
+gboolean
+(*GstMetaSerializeFunction) (const GstMeta * meta,
+                             GstByteArrayInterface * data,
+                             guint8 * version)
+Serialize meta into a format that can be stored or transmitted and later deserialized by GstMetaDeserializeFunction.
+
+By default version is set to 0, it should be bumped if incompatible changes are made to the format so GstMetaDeserializeFunction can deserialize each version.
+
+Parameters:
+
+meta – a GstMeta
+data – GstByteArrayInterface to append serialization data
+version ( [out]) – version of the serialization format
+Returns – TRUE on success, FALSE otherwise.
+Since : 1.24
+
+GstMetaTransformFunction 
+gboolean
+(*GstMetaTransformFunction) (GstBuffer * transbuf,
+                             GstMeta * meta,
+                             GstBuffer * buffer,
+                             GQuark type,
+                             gpointer data)
+Function called for each meta in buffer as a result of performing a transformation on transbuf. Additional type specific transform data is passed to the function as data.
+
+Implementations should check the type of the transform and parse additional type specific fields in data that should be used to update the metadata on transbuf.
+
+Parameters:
+
+transbuf – a GstBuffer
+meta – a GstMeta
+buffer – a GstBuffer
+type – the transform type
+data – transform specific data.
+Returns – TRUE if the transform could be performed

@@ -17,7 +17,6 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 
 #include "dmabuf.h"
@@ -25,9 +24,80 @@
 #include "rgaprocess.h"
 #include "rknnprocess.h"
 
+/* RknnMeta GstMeta 实现 */
+typedef struct {
+  GstMeta meta;
+  struct RknnMeta rknn_meta;
+} GstRknnMeta;
+
+/* RknnMeta API 类型 */
+static GType gst_rknn_meta_api_get_type(void);
+#define GST_RKNN_META_API_TYPE (gst_rknn_meta_api_get_type())
+static const GstMetaInfo *gst_rknn_meta_get_info(void);
+#define GST_RKNN_META_INFO (gst_rknn_meta_get_info())
+#define gst_buffer_get_rknn_meta(b) ((GstRknnMeta*)gst_buffer_get_meta((b), GST_RKNN_META_API_TYPE))
+
 /* Forward declarations */
 static gpointer push_thread(gpointer data);
 static gpointer work_thread(gpointer data);
+
+/* RknnMeta GstMeta 函数实现 */
+static gboolean gst_rknn_meta_init(GstMeta *meta, gpointer params, GstBuffer *buffer) {
+  GstRknnMeta *rknn_meta = (GstRknnMeta *)meta;
+  
+  /* 初始化 RknnMeta 结构体 */
+  memset(&rknn_meta->rknn_meta, 0, sizeof(struct RknnMeta));
+  
+  return TRUE;
+}
+
+static void gst_rknn_meta_free(GstMeta *meta, GstBuffer *buffer) {
+  /* 不需要额外释放，GstMeta 框架会处理 */
+}
+
+static gboolean gst_rknn_meta_transform(GstBuffer *transbuf, GstMeta *meta,
+                                        GstBuffer *buffer, GQuark type, gpointer data) {
+  GstRknnMeta *src = (GstRknnMeta *)meta;
+  GstRknnMeta *dest;
+  
+  /* 复制 meta 到目标 buffer */
+  dest = (GstRknnMeta *)gst_buffer_add_meta(transbuf, GST_RKNN_META_INFO, NULL);
+  if (!dest)
+    return FALSE;
+    
+  memcpy(&dest->rknn_meta, &src->rknn_meta, sizeof(struct RknnMeta));
+  
+  return TRUE;
+}
+
+static GType gst_rknn_meta_api_get_type(void) {
+  static GType type = 0;
+  static const gchar *tags[] = { NULL };
+  
+  if (g_once_init_enter(&type)) {
+    GType _type = gst_meta_api_type_register("GstRknnMetaAPI", tags);
+    g_once_init_leave(&type, _type);
+  }
+  
+  return type;
+}
+
+static const GstMetaInfo *gst_rknn_meta_get_info(void) {
+  static const GstMetaInfo *meta_info = NULL;
+  
+  if (g_once_init_enter(&meta_info)) {
+    const GstMetaInfo *info = gst_meta_register(
+        GST_RKNN_META_API_TYPE,
+        "GstRknnMeta",
+        sizeof(GstRknnMeta),
+        gst_rknn_meta_init,
+        gst_rknn_meta_free,
+        gst_rknn_meta_transform);
+    g_once_init_leave(&meta_info, info);
+  }
+  
+  return meta_info;
+}
 
 GST_DEBUG_CATEGORY(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
@@ -360,6 +430,17 @@ gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
     meta->offset[1] = meta->stride[0] * GST_ROUND_UP_16(meta->height);
   }
   log_buffer_info(raw_buffer);
+  
+  /* 添加 RknnMeta 到缓冲区 */
+  GstRknnMeta *rknn_meta = (GstRknnMeta *)gst_buffer_add_meta(raw_buffer, GST_RKNN_META_INFO, NULL);
+  if (rknn_meta) {
+    /* 记录预处理开始时间 */
+    rknn_meta->rknn_meta.start_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+    GST_DEBUG("Added RknnMeta to buffer with start time: %" GST_TIME_FORMAT,
+              GST_TIME_ARGS(rknn_meta->rknn_meta.start_time));
+  } else {
+    GST_WARNING("Failed to add RknnMeta to buffer");
+  }
 
   // 从缓冲区池获取 RKNN 缓冲区
   GstFlowReturn acquire_result = gst_buffer_pool_acquire_buffer(
@@ -426,6 +507,17 @@ static gpointer work_thread(gpointer data) {
     GstBuffer *raw_buffer = g_async_queue_pop(filter->raw_input_queue);
 
     GST_DEBUG("Thread %d recieved buffer %zu", worker_id, raw_buffer->offset);
+    
+    /* 获取 RknnMeta 并记录预处理时间 */
+    GstRknnMeta *rknn_meta = gst_buffer_get_rknn_meta(raw_buffer);
+    if (rknn_meta) {
+      rknn_meta->rknn_meta.preprocess_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+      GST_DEBUG("Thread %d got RknnMeta with start time: %" GST_TIME_FORMAT,
+                worker_id, GST_TIME_ARGS(rknn_meta->rknn_meta.start_time));
+    } else {
+      GST_WARNING("Thread %d failed to get RknnMeta from buffer", worker_id);
+    }
+    
     GstMemory *rknn_mem = gst_buffer_peek_memory(rknn_buffer, 0);
     GstMapInfo rknn_map_info;
     GstMemory *raw_mem = gst_buffer_peek_memory(raw_buffer, 0);
@@ -438,6 +530,9 @@ static gpointer work_thread(gpointer data) {
 
     // 执行推理
     GstClockTime start_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+    if (rknn_meta) {
+      rknn_meta->rknn_meta.queue_time = start_time;
+    }
     GST_TRACE("Thread %d offset %zu start infer", worker_id,
               raw_buffer->offset);
     
@@ -449,6 +544,9 @@ static gpointer work_thread(gpointer data) {
     // GST_DEBUG("Dumped npy");
 
     GstClockTime end_infer_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+    if (rknn_meta) {
+      rknn_meta->rknn_meta.infer_time = end_infer_time;
+    }
     // 后处理
     GST_TRACE("Thread %d offset %zu inference cost %lu us, tart postprocess", worker_id,
               raw_buffer->offset, (end_infer_time - start_time) / GST_USECOND);
@@ -459,12 +557,35 @@ static gpointer work_thread(gpointer data) {
     rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output,
                          rknn_engine->outputs);
     GstClockTime end_post_process_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+    if (rknn_meta) {
+      rknn_meta->rknn_meta.postprocess_time = end_post_process_time;
+    }
     
     if (filter->draw_boxes) {
       rknn_visualize(rknn_engine, raw_buffer);
     }
 
     GstClockTime end_visualize_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+    if (rknn_meta) {
+      rknn_meta->rknn_meta.visualize_time = end_visualize_time;
+      rknn_meta->rknn_meta.end_time = end_visualize_time;
+      
+      /* 将结果复制到 RknnMeta 中 */
+      memcpy(rknn_meta->rknn_meta.results, rknn_engine->results,
+             sizeof(float) * MAX_PERSON * 56);
+      rknn_meta->rknn_meta.results_size = rknn_engine->results_size;
+      
+      GST_DEBUG("Thread %d RknnMeta timing: preprocess=%" GST_TIME_FORMAT
+                " queue=%" GST_TIME_FORMAT " infer=%" GST_TIME_FORMAT
+                " postprocess=%" GST_TIME_FORMAT " visualize=%" GST_TIME_FORMAT
+                " total=%" GST_TIME_FORMAT, worker_id,
+                GST_TIME_ARGS(rknn_meta->rknn_meta.preprocess_time - rknn_meta->rknn_meta.start_time),
+                GST_TIME_ARGS(rknn_meta->rknn_meta.queue_time - rknn_meta->rknn_meta.preprocess_time),
+                GST_TIME_ARGS(rknn_meta->rknn_meta.infer_time - rknn_meta->rknn_meta.queue_time),
+                GST_TIME_ARGS(rknn_meta->rknn_meta.postprocess_time - rknn_meta->rknn_meta.infer_time),
+                GST_TIME_ARGS(rknn_meta->rknn_meta.visualize_time - rknn_meta->rknn_meta.postprocess_time),
+                GST_TIME_ARGS(rknn_meta->rknn_meta.end_time - rknn_meta->rknn_meta.start_time));
+    }
 
     GstClockTime infer_time_us = (end_infer_time - start_time) / GST_USECOND;
     GstClockTime post_process_time_us = (end_post_process_time - end_infer_time) / GST_USECOND;

@@ -268,7 +268,7 @@ void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output) {
       float y = data_entry[j * 3 + 6];
       int xi = 2 * int(x / 2);
       int yi = 2 * int(y / 2);
-      if (xi - 4 >= 0 && xi - 4 < rknn_process->img_width && yi + 4 >= 0 &&
+      if (xi - 4 >= 0 && xi + 4 < rknn_process->img_width && yi - 4 >= 0 &&
           yi + 4 < rknn_process->img_height) {
         kpts_rect_arr[kpts_num++] = {xi - 4, yi - 4, 8, 8};
       }
