@@ -2,9 +2,21 @@
 #define _RKNN_META_H_
 
 #include <gst/gst.h>
+#define MAX_PERSON 128
 
 /* 前向声明 RknnMeta 结构体 */
-struct RknnMeta;
+struct RknnMeta {
+  GstClockTime start_time;
+  GstClockTime queue_done;
+  GstClockTime preprocess_done;
+  GstClockTime infer_done;
+  GstClockTime postprocess_done;
+  GstClockTime visualize_done;
+  GstClockTime push_pad_done;
+
+  float results[MAX_PERSON][56];
+  int results_size;
+};
 
 /* RknnMeta GstMeta 实现 */
 typedef struct {

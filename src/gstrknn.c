@@ -5,15 +5,14 @@
 #endif
 
 #include <glib.h>
+#include <gst/gst.h>
 #include <gst/gstbuffer.h>
 #include <gst/gstinfo.h>
 #include <gst/gstmemory.h>
 #include <gst/gstpad.h>
-#include <gst/video/video-format.h>
-#include <gst/gst.h>
 #include <gst/video/gstvideopool.h>
+#include <gst/video/video-format.h>
 #include <math.h>
-#include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
@@ -21,37 +20,18 @@
 
 #include "dmabuf.h"
 #include "gstrknn.h"
-#include "rgaprocess.h"
+#include "rknn_meta.h"
 #include "rknnprocess.h"
-#include "rknnmeta.h"
 
+#include <sys/time.h>
 
 /* Forward declarations */
 static gpointer push_thread(gpointer data);
 static gpointer work_thread(gpointer data);
 
-
 GST_DEBUG_CATEGORY(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
-/* Buffer offset 比较函数 */
-static gint buffer_offset_compare(gconstpointer a, gconstpointer b) {
-  GstBuffer *buf_a = (GstBuffer *)a;
-  GstBuffer *buf_b = (GstBuffer *)b;
-
-  if (buf_a->offset < buf_b->offset) {
-    return -1;
-  } else if (buf_a->offset > buf_b->offset) {
-    return 1;
-  } else {
-    return 0;
-  }
-}
-/* RKNN 推理消费者线程 */
-typedef struct {
-  GstPluginRknn *filter;
-  gint worker_id;
-} ThreadData;
 
 /* 初始化 RKNN 推理引擎，并获得 RKNN 输入所需的长宽 */
 static gboolean init_rknn_engines(GstPluginRknn *filter) {
@@ -64,30 +44,25 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     // 为每个引擎分配内存
     filter->rknn_engines[i] =
         (struct RknnEngine *)g_malloc0(sizeof(struct RknnEngine));
-    struct RknnEngine *rknn_engine = filter->rknn_engines[i];
-
-    // 设置模型路径和标签路径
-    if (filter->model_path) {
-      rknn_engine->model_path = g_strdup(filter->model_path);
-    }
-
+    struct RknnEngine *rknn_process = filter->rknn_engines[i];
+    // 设置输入输出队列
+    rknn_process->rknn_input_queue = g_async_queue_new();
+    rknn_process->rknn_output_queue = g_async_queue_new();
+    rknn_process->model_path = g_strdup(filter->model_path);
+    rknn_process->filter = GST_OBJECT(filter);
     // 初始化 RKNN 引擎，传入第一个引擎的上下文
     // 第一次调用时，第一个引擎的上下文为0，会初始化新上下文
     // 后续调用时，第一个引擎的上下文已初始化，会复用上下文
-    int ret = rknn_prepare(rknn_engine, &filter->rknn_engines[0]->ctx, i % 3);
-    if (ret < 0) {
-      GST_ERROR("Failed to initialize RKNN engine %d", i);
-      // 使用 destroy_rknn_engines 来释放所有已分配的资源
-      destroy_rknn_engines(filter);
-      return FALSE;
-    }
-    rknn_engine->worker_id = i;
+    rknn_process->worker_id = i;
+    
+    rknn_process->worker_0_ctx = &filter->rknn_engines[0]->ctx;
+    rknn_init_process(rknn_process);
 
     // 设置原始图像尺寸
-    rknn_engine->img_width = filter->img_width;
-    rknn_engine->img_height = filter->img_height;
-    filter->model_width = rknn_engine->model_width;
-    filter->model_height = rknn_engine->model_height;
+    rknn_process->img_width = filter->img_width;
+    rknn_process->img_height = filter->img_height;
+    filter->model_width = rknn_process->model_width;
+    filter->model_height = rknn_process->model_height;
   }
   GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d",
             filter->img_width, filter->img_height, filter->model_width,
@@ -162,6 +137,8 @@ void destroy_rknn_engines(GstPluginRknn *filter) {
       if (filter->rknn_engines[i]->model_path) {
         g_free(filter->rknn_engines[i]->model_path);
       }
+      g_async_queue_unref(filter->rknn_engines[i]->rknn_input_queue);
+      g_async_queue_unref(filter->rknn_engines[i]->rknn_output_queue);
       g_free(filter->rknn_engines[i]);
     }
   }
@@ -184,44 +161,22 @@ static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
     return FALSE;
   }
 
-  // 创建缓冲区池来替代直接创建缓冲区
-  if (filter->sink_caps) {
-    GST_INFO("Creating buffer pools to replace direct buffer creation");
-
-    // 使用新的工具函数创建 RKNN 输入缓冲区池
-    GError *error = NULL;
-    filter->rknn_buffer_pool = dma_buffer_pool_new(
-        GST_VIDEO_FORMAT_RGB, filter->model_width, filter->model_height, 1, 1);
-
-    if (!filter->rknn_buffer_pool) {
-      GST_ERROR("Failed to create RKNN buffer pool: %s",
-                error ? error->message : "Unknown error");
-      if (error) {
-        g_error_free(error);
-      }
-      return FALSE;
-    }
-    GST_INFO("RKNN buffer pool created and started successfully");
-  }
   // Initialize task data and start multiple consumer threads
   GST_INFO("Creating %d RKNN consumer threads", filter->workers);
   filter->task_threads = g_new0(GThread *, filter->workers);
 
   for (int i = 0; i < filter->workers; i++) {
-    ThreadData *thread_data = g_new0(ThreadData, 1);
-    thread_data->filter = filter;
-    thread_data->worker_id = i;
 
     gchar thread_name[32];
     g_snprintf(thread_name, sizeof(thread_name), "rknn-consumer-%d", i);
     filter->task_threads[i] =
-        g_thread_new(thread_name, work_thread, thread_data);
+        g_thread_new(thread_name, work_thread, filter->rknn_engines[i]);
     GST_DEBUG("Created RKNN consumer thread %d with name: %s", i, thread_name);
   }
 
   // 创建 output_collector_thread 线程
   GST_INFO("Creating output collector thread");
-  filter->output_collector_thread =
+  filter->push_thread =
       g_thread_new("output-collector", push_thread, filter);
 
   GST_DEBUG("allocate_state_resources end");
@@ -236,7 +191,8 @@ static void release_rknn_resources(GstPluginRknn *filter) {
     // 向每个线程发送 NULL buffer 作为停止信号
     for (int i = 0; i < filter->workers; i++) {
       GstBuffer *null_buffer = gst_buffer_new();
-      g_async_queue_push(filter->rknn_input_queue, null_buffer);
+      g_async_queue_push(filter->rknn_engines[i]->rknn_input_queue,
+                         null_buffer);
     }
 
     // 等待所有线程结束
@@ -248,179 +204,78 @@ static void release_rknn_resources(GstPluginRknn *filter) {
         GST_DEBUG("Worker %d thread joined successfully", i);
       }
     }
-
     g_free(filter->task_threads);
-    filter->task_threads = NULL;
     GST_INFO("All RKNN consumer threads stopped and cleaned up");
   }
 
-  // 停止并清理 output_collector_thread
-  if (filter->output_collector_thread) {
-    GST_INFO("Stopping output collector thread");
-    // 向 output_collector_thread 发送 NULL buffer 作为停止信号
-    GstBuffer *null_buffer = gst_buffer_new();
-    g_async_queue_push(filter->raw_output_queue, null_buffer);
-
-    // 等待线程结束
-    GST_DEBUG("Waiting for output collector thread to join");
-    g_thread_join(filter->output_collector_thread);
-    filter->output_collector_thread = NULL;
-    GST_DEBUG("Output collector thread joined successfully");
-    GST_INFO("Output collector thread stopped and cleaned up");
-  }
-
+  // 向收集线程发送停止信号
+  // 直接发送任意指针会报错，需要一个真实的对象。
+  filter->rknn_engines[0]->worker_id = -1;
+  g_async_queue_push(filter->workers_queue, filter->rknn_engines[0]);
+  GST_DEBUG("Pushed worker_id -1 to workers queue");
+  g_thread_join(filter->push_thread);
+  GST_INFO("Push thread stopped and cleaned up");
+  
   /* Free allocated resources */
   if (filter->model_path) {
     g_free(filter->model_path);
     filter->model_path = NULL;
   }
+
   if (filter->resize_mode) {
     g_free(filter->resize_mode);
     filter->resize_mode = NULL;
   }
+
   if (filter->sink_caps) {
     gst_caps_unref(filter->sink_caps);
     filter->sink_caps = NULL;
   }
+
   if (filter->src_caps) {
     gst_caps_unref(filter->src_caps);
     filter->src_caps = NULL;
   }
 
-  // 清空处理中的队列
-  if (filter->rknn_input_queue) {
-    GstBuffer *buf;
-    while ((buf = g_async_queue_try_pop(filter->rknn_input_queue)) != NULL) {
-      gst_buffer_unref(buf);
-    }
-    g_async_queue_unref(filter->rknn_input_queue);
-    filter->rknn_input_queue = NULL;
+  if (filter->workers_queue) {
+    g_async_queue_unref(filter->workers_queue);
   }
 
-  if (filter->rknn_output_queue) {
-    GstBuffer *buf;
-    while ((buf = g_async_queue_try_pop(filter->rknn_output_queue)) != NULL) {
-      gst_buffer_unref(buf);
-    }
-    g_async_queue_unref(filter->rknn_output_queue);
-    filter->rknn_output_queue = NULL;
-  }
-
-  if (filter->raw_input_queue) {
-    GstBuffer *buf;
-    while ((buf = g_async_queue_try_pop(filter->raw_input_queue)) != NULL) {
-      gst_buffer_unref(buf);
-    }
-    g_async_queue_unref(filter->raw_input_queue);
-    filter->raw_input_queue = NULL;
-  }
-
-  if (filter->raw_output_queue) {
-    GstBuffer *buf;
-    while ((buf = g_async_queue_try_pop(filter->raw_output_queue)) != NULL) {
-      gst_buffer_unref(buf);
-    }
-    g_async_queue_unref(filter->raw_output_queue);
-    filter->raw_output_queue = NULL;
-  }
-
-  // 释放缓冲区池
-  if (filter->rknn_buffer_pool) {
-    GST_INFO("Stopping RKNN buffer pool");
-    gst_buffer_pool_set_active(GST_BUFFER_POOL(filter->rknn_buffer_pool),
-                               FALSE);
-    gst_object_unref(filter->rknn_buffer_pool);
-    filter->rknn_buffer_pool = NULL;
-  }
-
-  // 清空乱序缓冲区
-  if (filter->out_of_order_buffers) {
-    GList *l;
-    for (l = filter->out_of_order_buffers; l != NULL; l = l->next) {
-      GstBuffer *buf = (GstBuffer *)l->data;
-      gst_buffer_unref(buf);
-    }
-    g_list_free(filter->out_of_order_buffers);
-    filter->out_of_order_buffers = NULL;
-  }
-
-  // 释放 RKNN 引擎
   destroy_rknn_engines(filter);
+  GST_DEBUG("Release rknn resources done");
 }
 
 /* 预处理格式转换和缩放 */
-gboolean preprocess_buffer(GstPluginRknn *filter, GstBuffer *raw_buffer) {
-  GstBuffer *rknn_buffer = NULL;
-  gboolean ret = FALSE;
 
-  GST_DEBUG("Starting preprocess_buffer function");
-  GST_DEBUG("raw_input before preprocess");
-  if (filter->mppjpegdec_offset_workaround) {
-    GstVideoMeta *meta = gst_buffer_get_video_meta(raw_buffer);
-    GST_DEBUG("Apply offset workaround to raw_input. Before %zu After %d",
-              meta->offset[1], meta->stride[0] * GST_ROUND_UP_16(meta->height));
-    meta->offset[1] = meta->stride[0] * GST_ROUND_UP_16(meta->height);
-  }
-  log_buffer_info(raw_buffer);
-  
-  /* 添加 RknnMeta 到缓冲区 */
-  GstRknnMeta *rknn_meta = (GstRknnMeta *)gst_buffer_add_meta(raw_buffer, GST_RKNN_META_INFO, NULL);
-  if (rknn_meta) {
-    /* 记录预处理开始时间 */
-    rknn_meta->rknn_meta.start_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
-    GST_DEBUG("Added RknnMeta to buffer with start time: %" GST_TIME_FORMAT,
-              GST_TIME_ARGS(rknn_meta->rknn_meta.start_time));
-  } else {
-    GST_WARNING("Failed to add RknnMeta to buffer");
+gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
+
+  gst_buffer_add_meta(raw_buffer, GST_RKNN_META_INFO, NULL);
+  struct RknnMeta* rknn_meta = &gst_buffer_get_rknn_meta(raw_buffer)->rknn_meta;
+  rknn_meta->start_time = gst_clock_get_time(filter->clock);
+  struct RknnEngine *rknn_engine = filter->rknn_engines[filter->next_worker_id];
+  g_async_queue_push(filter->workers_queue, rknn_engine);
+  g_async_queue_push(rknn_engine->rknn_input_queue, raw_buffer);
+  GST_DEBUG("Scheduler push buffer %lu to worker %d",
+            GST_BUFFER_OFFSET(raw_buffer), filter->next_worker_id);
+  filter->next_worker_id++;
+  if (filter->next_worker_id == filter->workers) {
+    filter->next_worker_id = 0;
   }
 
-  // 从缓冲区池获取 RKNN 缓冲区
-  GstFlowReturn acquire_result = gst_buffer_pool_acquire_buffer(
-      GST_BUFFER_POOL(filter->rknn_buffer_pool), &rknn_buffer, NULL);
-  if (acquire_result != GST_FLOW_OK || !rknn_buffer) {
-    GST_WARNING("Failed to acquire RKNN buffer from pool: %s",
-                gst_flow_get_name(acquire_result));
-    goto error;
-  }
-
-  GST_DEBUG("Source format: %s, dimensions: %dx%d",
-            gst_video_format_to_string(filter->sink_format), filter->img_width,
-            filter->img_height);
-
-  if (raw_to_rknn(filter->rknn_engines[0], raw_buffer, rknn_buffer) != 0) {
-    GST_ERROR("Failed to convert format to RGB");
-    goto error;
-  }
-
-  // 将处理后的缓冲区放入处理队列
-  g_async_queue_push(filter->rknn_input_queue, rknn_buffer);
-  g_async_queue_push(filter->raw_input_queue, raw_buffer);
-  GST_DEBUG("Preprocessing completed successfully");
-  ret = TRUE;
-  return ret;
-
-error:
-  // 释放已分配的资源
-  if (rknn_buffer) {
-    gst_buffer_unref(rknn_buffer);
-  }
-  if (raw_buffer) {
-    gst_buffer_unref(raw_buffer);
-  }
-  return ret;
+  return TRUE;
 }
-
 static gpointer work_thread(gpointer data) {
-  ThreadData *thread_data = (ThreadData *)data;
-  GstPluginRknn *filter = thread_data->filter;
-  gint worker_id = thread_data->worker_id;
-  struct RknnEngine *rknn_engine = filter->rknn_engines[worker_id];
+  struct RknnEngine* rknn_engine = (struct RknnEngine*) data;
+  GstPluginRknn* filter = GST_PLUGIN_RKNN(rknn_engine->filter);
+  gint worker_id = rknn_engine->worker_id;
 
   // 绑定 CPU 和 NPU 核心
   int npu_core = worker_id % 3;
-  rknn_core_mask npu_core_mask = npu_core == 0 ? RKNN_NPU_CORE_0 : npu_core == 1 ? RKNN_NPU_CORE_1 : RKNN_NPU_CORE_2;
+  rknn_core_mask npu_core_mask = npu_core == 0   ? RKNN_NPU_CORE_0
+                                 : npu_core == 1 ? RKNN_NPU_CORE_1
+                                                 : RKNN_NPU_CORE_2;
   rknn_set_core_mask(rknn_engine->ctx, npu_core_mask);
-  int cpu_core = worker_id % 3 + 4; // 4-7 是大核
+  int cpu_core = worker_id % 4 + 4; // 4-7 是大核
   cpu_set_t cpuset;
   pthread_t current_thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -429,177 +284,62 @@ static gpointer work_thread(gpointer data) {
 
   GST_INFO("Starting RKNN engine thread %d", worker_id);
   while (TRUE) {
-    GstBuffer *rknn_buffer = g_async_queue_pop(filter->rknn_input_queue);
-    if (gst_buffer_get_size(rknn_buffer) == 0) {
+    GstBuffer *img_buffer = g_async_queue_pop(rknn_engine->rknn_input_queue);
+    GST_DEBUG("Thread %d recieved buffer %zu", worker_id, img_buffer->offset);
+
+    // 终止信号
+    if (gst_buffer_get_size(img_buffer) == 0) {
       GST_INFO("Thread %d recieved ending buffer, stoping", worker_id);
-      gst_buffer_unref(rknn_buffer);
-      g_free(thread_data);
+      gst_buffer_unref(img_buffer);
       return NULL;
     }
-    GstBuffer *raw_buffer = g_async_queue_pop(filter->raw_input_queue);
 
-    GST_DEBUG("Thread %d recieved buffer %zu", worker_id, raw_buffer->offset);
-    
-    /* 获取 RknnMeta 并记录预处理时间 */
-    GstRknnMeta *rknn_meta = gst_buffer_get_rknn_meta(raw_buffer);
-    if (rknn_meta) {
-      rknn_meta->rknn_meta.preprocess_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
-      GST_DEBUG("Thread %d got RknnMeta with start time: %" GST_TIME_FORMAT,
-                worker_id, GST_TIME_ARGS(rknn_meta->rknn_meta.start_time));
-    } else {
-      GST_WARNING("Thread %d failed to get RknnMeta from buffer", worker_id);
-    }
-    
-    GstMemory *rknn_mem = gst_buffer_peek_memory(rknn_buffer, 0);
-    GstMapInfo rknn_map_info;
-    GstMemory *raw_mem = gst_buffer_peek_memory(raw_buffer, 0);
+    struct RknnMeta* rknn_meta = &gst_buffer_get_rknn_meta(img_buffer)->rknn_meta;
+    rknn_engine->rknn_meta = rknn_meta;
+    rknn_meta->queue_done = gst_clock_get_time(filter->clock);
 
-    GstMapInfo rgb_map_info;
-    gst_memory_map(rknn_mem, &rknn_map_info, GST_MAP_READWRITE);
-    gst_memory_map(raw_mem, &rgb_map_info, GST_MAP_READWRITE);
-    rknn_engine->inputs[0].buf = rknn_map_info.data;
-    rknn_engine->inputs[0].size = rknn_map_info.size;
-
-    // 执行推理
-    GstClockTime start_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
-    if (rknn_meta) {
-      rknn_meta->rknn_meta.queue_time = start_time;
-    }
     GST_TRACE("Thread %d offset %zu start infer", worker_id,
-              raw_buffer->offset);
-    
-
+              img_buffer->offset);
+    rknn_preprocess(rknn_engine, img_buffer);
+    rknn_meta->preprocess_done = gst_clock_get_time(filter->clock);
     rknn_inference(rknn_engine);
-    // save_rgb_to_bmp("rknn_input.bmp", rknn_map_info.data,
-    // rknn_engine->model_width, rknn_engine->model_height);
-    // rknn_dump_io(rknn_engine);
-    // GST_DEBUG("Dumped npy");
-
-    GstClockTime end_infer_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
-    if (rknn_meta) {
-      rknn_meta->rknn_meta.infer_time = end_infer_time;
-    }
-    // 后处理
-    GST_TRACE("Thread %d offset %zu inference cost %lu us, tart postprocess", worker_id,
-              raw_buffer->offset, (end_infer_time - start_time) / GST_USECOND);
+    rknn_meta->infer_done = gst_clock_get_time(filter->clock);
     rknn_postprocess(rknn_engine, 0.6, 0.45);
-    // 可视化
-    GST_TRACE("Thread %d offset %zu start visualize", worker_id,
-              raw_buffer->offset);
-    rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output,
-                         rknn_engine->outputs);
-    GstClockTime end_post_process_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
-    if (rknn_meta) {
-      rknn_meta->rknn_meta.postprocess_time = end_post_process_time;
-    }
-    
+    rknn_meta->postprocess_done = gst_clock_get_time(filter->clock);
     if (filter->draw_boxes) {
-      rknn_visualize(rknn_engine, raw_buffer);
+      rknn_visualize(rknn_engine, img_buffer);
     }
-
-    GstClockTime end_visualize_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
-    if (rknn_meta) {
-      rknn_meta->rknn_meta.visualize_time = end_visualize_time;
-      rknn_meta->rknn_meta.end_time = end_visualize_time;
-      
-      /* 将结果复制到 RknnMeta 中 */
-      memcpy(rknn_meta->rknn_meta.results, rknn_engine->results,
-             sizeof(float) * MAX_PERSON * 56);
-      rknn_meta->rknn_meta.results_size = rknn_engine->results_size;
-      
-      GST_DEBUG("Thread %d RknnMeta timing: preprocess=%" GST_TIME_FORMAT
-                " queue=%" GST_TIME_FORMAT " infer=%" GST_TIME_FORMAT
-                " postprocess=%" GST_TIME_FORMAT " visualize=%" GST_TIME_FORMAT
-                " total=%" GST_TIME_FORMAT, worker_id,
-                GST_TIME_ARGS(rknn_meta->rknn_meta.preprocess_time - rknn_meta->rknn_meta.start_time),
-                GST_TIME_ARGS(rknn_meta->rknn_meta.queue_time - rknn_meta->rknn_meta.preprocess_time),
-                GST_TIME_ARGS(rknn_meta->rknn_meta.infer_time - rknn_meta->rknn_meta.queue_time),
-                GST_TIME_ARGS(rknn_meta->rknn_meta.postprocess_time - rknn_meta->rknn_meta.infer_time),
-                GST_TIME_ARGS(rknn_meta->rknn_meta.visualize_time - rknn_meta->rknn_meta.postprocess_time),
-                GST_TIME_ARGS(rknn_meta->rknn_meta.end_time - rknn_meta->rknn_meta.start_time));
-    }
-
-    GstClockTime infer_time_us = (end_infer_time - start_time) / GST_USECOND;
-    GstClockTime post_process_time_us = (end_post_process_time - end_infer_time) / GST_USECOND;
-    GstClockTime visualize_time_us = (end_visualize_time - end_post_process_time) / GST_USECOND;
-    GST_INFO("Thread %d offset %zu done %d person detected infer %lu us post process %lu us visualize %lu us", worker_id,
-             raw_buffer->offset, rknn_engine->results_size, infer_time_us, post_process_time_us, visualize_time_us);
-
-    gst_memory_unmap(rknn_mem, &rknn_map_info);
-    gst_memory_unmap(raw_mem, &rgb_map_info);
-    gst_buffer_unref(rknn_buffer);
-    g_async_queue_push(filter->raw_output_queue, raw_buffer);
+    rknn_meta->visualize_done = gst_clock_get_time(filter->clock);
+    g_async_queue_push(rknn_engine->rknn_output_queue, img_buffer);
+    GST_INFO(
+        "Thread %d offset %zu person %d | queue %zuus, preprocess %zuus, infer "
+        "%zuus, postprocess %zuus, visualize %zuus.",
+        worker_id, img_buffer->offset, rknn_meta->results_size,
+        (rknn_meta->queue_done - rknn_meta->start_time) / GST_USECOND,
+        (rknn_meta->preprocess_done - rknn_meta->queue_done) / GST_USECOND,
+        (rknn_meta->infer_done - rknn_meta->preprocess_done) / GST_USECOND,
+        (rknn_meta->postprocess_done - rknn_meta->infer_done) / GST_USECOND,
+        (rknn_meta->visualize_done - rknn_meta->postprocess_done) / GST_USECOND);
   }
 }
 
 static gpointer push_thread(gpointer data) {
   GstPluginRknn *filter = GST_PLUGIN_RKNN(data);
-  GST_DEBUG("Thread output start");
+  GST_DEBUG("Push thread start");
   while (TRUE) {
-    // 从 rgb_output_queue 中取出 buffer
-    GstBuffer *rgb_buf = g_async_queue_pop(filter->raw_output_queue);
-    GST_TRACE("Thread output recieved buffer offset %zu", rgb_buf->offset);
-    // 检查是否是停止信号
-    if (gst_buffer_get_size(rgb_buf) == 0) {
-      GST_INFO("Output collector thread received ending buffer, stopping");
-      gst_buffer_unref(rgb_buf);
-      return NULL;
+    struct RknnEngine* worker = g_async_queue_pop(filter->workers_queue);
+    GST_DEBUG("Push thread worker id %d", worker->worker_id);
+    if (worker->worker_id == -1) {
+      break;
     }
-    // gst_pad_set_caps(filter->srcpad, filter->src_caps);
-
-    // 检查 buffer 的 offset 是否等于 next_output_offset
-    if (rgb_buf->offset == filter->next_output_offset) {
-      GST_TRACE(
-          "Buffer offset %zu matches next output offset, pushing directly",
-          rgb_buf->offset);
-      // 直接输出
-      GST_TRACE("Buffer offset %zu pushed, next output offset is now %zu",
-                rgb_buf->offset, filter->next_output_offset);
-      GST_DEBUG("Pushing buffer with offset %zu", rgb_buf->offset);
-      log_buffer_info(rgb_buf);
-      gst_pad_push(filter->srcpad, rgb_buf);
-      filter->next_output_offset++;
-      // 检查 out_of_order_buffers 中是否有可以按顺序输出的 buffer
-      GST_TRACE("Checking out_of_order_buffers for sequential buffers");
-      while (filter->out_of_order_buffers != NULL) {
-        GList *first = g_list_first(filter->out_of_order_buffers);
-        GstBuffer *buf = (GstBuffer *)first->data;
-
-        if (buf->offset == filter->next_output_offset) {
-          GST_TRACE("Found sequential buffer with offset %zu in "
-                    "out_of_order_buffers, pushing",
-                    buf->offset);
-          // 移除并输出
-          filter->out_of_order_buffers =
-              g_list_remove_link(filter->out_of_order_buffers, first);
-          g_list_free_1(first);
-          GST_TRACE("Sequential buffer with offset %zu pushed, next "
-                    "output offset is now %zu",
-                    buf->offset, filter->next_output_offset);
-          GST_DEBUG("Pushing sequential buffer with offset %zu", buf->offset);
-          log_buffer_info(rgb_buf);
-          gst_pad_push(filter->srcpad, buf);
-          filter->next_output_offset++;
-
-        } else {
-          // 如果第一个 buffer 都不是下一个应该输出的，那么后面的也不会是
-          GST_TRACE("Next buffer in out_of_order_buffers (offset %zu) "
-                    "is not sequential (expected %zu), breaking",
-                    buf->offset, filter->next_output_offset);
-          break;
-        }
-      }
-    } else {
-      GST_TRACE("Buffer offset %zu does not match next output offset "
-                "%zu, storing in out_of_order_buffers",
-                rgb_buf->offset, filter->next_output_offset);
-      // 将 buffer 存储在 out_of_order_buffers 中
-      filter->out_of_order_buffers = g_list_insert_sorted(
-          filter->out_of_order_buffers, rgb_buf, buffer_offset_compare);
-      GST_TRACE("Buffer with offset %zu stored in out_of_order_buffers",
-                rgb_buf->offset);
-    }
+    GstBuffer* buf = g_async_queue_pop(worker->rknn_output_queue);
+    
+    struct RknnMeta* meta = &gst_buffer_get_rknn_meta(buf)->rknn_meta;
+    meta->push_pad_done = gst_clock_get_time(filter->clock);
+    GST_DEBUG("Push thread pushed offset %lu", GST_BUFFER_OFFSET(buf));
+    gst_pad_push(filter->srcpad, buf);
   }
+  GST_DEBUG("Push thread stop");
 
   return NULL;
 }
@@ -740,7 +480,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->resize_mode = g_strdup("pad");        // 默认值为 "pad"
   filter->model_width = 0;
   filter->model_height = 0;
-
+  filter->clock = gst_system_clock_obtain();
   // 初始化输入格式信息
   filter->sink_format = GST_VIDEO_FORMAT_UNKNOWN;
   filter->img_width = 0;
@@ -781,6 +521,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
     GST_ERROR("Failed to create src pad");
     return;
   }
+  
 
   if (!gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad)) {
     GST_ERROR("Failed to add src pad to element");
@@ -792,13 +533,8 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   GST_DEBUG("Source pad added to element");
 
   // Initialize queues
-  filter->rknn_input_queue = g_async_queue_new();
-  filter->rknn_output_queue = g_async_queue_new();
-  filter->raw_input_queue = g_async_queue_new();
-  filter->raw_output_queue = g_async_queue_new();
-  filter->next_output_offset = 0;
-  filter->out_of_order_buffers = NULL;
-  filter->output_collector_thread = NULL;
+  filter->workers_queue = g_async_queue_new();
+  filter->next_worker_id = 0;
 
   GST_DEBUG("GstPluginRknn element initialized successfully");
 }
@@ -963,17 +699,20 @@ static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
                               video_info.height);
   }
 
+  // Workaround mppjpegdec offset bug
+  if (filter->mppjpegdec_offset_workaround) {
+    GST_DEBUG("Apply offset workaround to raw_input. Before %zu After %d",
+              meta->offset[1], meta->stride[0] * GST_ROUND_UP_16(meta->height));
+    meta->offset[1] = meta->stride[0] * GST_ROUND_UP_16(meta->height);
+  }
+
   /* Log buffer information using the new utility function */
 
   GST_DEBUG("Buffer received, size: %lu dts %zu pts %zu offset %zu",
-           gst_buffer_get_size(buf), buf->dts, buf->pts, buf->offset);
+            gst_buffer_get_size(buf), buf->dts, buf->pts, buf->offset);
   log_buffer_info(buf);
 
-  // 执行预处理
-  if (!preprocess_buffer(filter, buf)) {
-    GST_WARNING("Failed to preprocess buffer");
-  }
-
+  scheduler(filter, buf);
   /* just push out the incoming buffer without touching it */
   return GST_FLOW_OK;
 }

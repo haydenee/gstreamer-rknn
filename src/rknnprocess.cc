@@ -6,8 +6,11 @@
 #include <string>
 
 #include "cnpy/cnpy.h"
+#include "dmabuf.h"
+#include "im2d_buffer.h"
 #include "im2d_type.h"
 #include "postprocess.h"
+#include "rga.h"
 #include "rgaprocess.h"
 #include "rknn_api.h"
 #include "rknnprocess.h"
@@ -20,9 +23,7 @@ static unsigned char *load_model(const char *filename, int *model_size);
 static void dump_tensor_attr(rknn_tensor_attr *attr);
 
 static float boxes_exp[256];
-int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context,
-                 int core) {
-  int ret;
+int rknn_init_process(struct RknnEngine *rknn_process) {
   /* Create the neural network */
   GST_DEBUG("Loading model...");
   int model_data_size = 0;
@@ -31,78 +32,59 @@ int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context,
   rknn_process->ctx = 0;
 
   // 如果提供了共享上下文且不为0，则复用它
-  bool is_first_init;
-  if (shared_context != NULL && *shared_context != 0) {
+
+  if (rknn_process->worker_id != 0) {
     GST_DEBUG("Duplicating shared RKNN context");
-    ret = rknn_dup_context(shared_context, &rknn_process->ctx);
-    if (ret < 0) {
-      GST_ERROR("rknn_dup_context error ret=%d", ret);
-      return -1;
-    }
-    is_first_init = false;
-    // 复用上下文时不需要重新加载模型数据
-    rknn_process->model_data = NULL;
+    rknn_dup_context(rknn_process->worker_0_ctx, &rknn_process->ctx);
   } else {
-    // 否则初始化新的上下文
-    if (!rknn_process->model_path) {
-      GST_ERROR("model_path is NULL");
-      return -1;
-    }
+
     GST_DEBUG("Initializing new RKNN context");
     rknn_process->model_data =
         load_model(rknn_process->model_path, &model_data_size);
-    ret = rknn_init(&rknn_process->ctx, rknn_process->model_data,
-                    model_data_size, 0, NULL);
-    if (ret < 0) {
-      GST_ERROR("rknn_init error ret=%d", ret);
-      return -1;
-    }
-    is_first_init = true;
+    rknn_init(&rknn_process->ctx, rknn_process->model_data, model_data_size, 0,
+              NULL);
   }
+
   rknn_sdk_version version;
-  ret = rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version,
-                   sizeof(rknn_sdk_version));
-  if (ret < 0) {
-    GST_ERROR("rknn_init error ret=%d", ret);
-    return -1;
-  }
+  rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version,
+             sizeof(rknn_sdk_version));
   GST_DEBUG("sdk version: %s driver version: %s", version.api_version,
             version.drv_version);
 
-  ret = rknn_query(rknn_process->ctx, RKNN_QUERY_IN_OUT_NUM,
-                   &rknn_process->io_num, sizeof(rknn_process->io_num));
-  if (ret < 0) {
-    GST_ERROR("rknn_init error ret=%d", ret);
-    return -1;
-  }
+  rknn_query(rknn_process->ctx, RKNN_QUERY_IN_OUT_NUM, &rknn_process->io_num,
+             sizeof(rknn_process->io_num));
   GST_DEBUG("model input num: %d, output num: %d", rknn_process->io_num.n_input,
             rknn_process->io_num.n_output);
 
   rknn_process->input_attrs = (rknn_tensor_attr *)malloc(
       sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
-  memset(rknn_process->input_attrs, 0,
-         sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
-  for (uint i = 0; i < rknn_process->io_num.n_input; i++) {
-    rknn_process->input_attrs[i].index = i;
-    ret = rknn_query(rknn_process->ctx, RKNN_QUERY_INPUT_ATTR,
-                     &(rknn_process->input_attrs[i]), sizeof(rknn_tensor_attr));
-    if (ret < 0) {
-      GST_ERROR("rknn_init error ret=%d", ret);
-      return -1;
-    }
-    dump_tensor_attr(&(rknn_process->input_attrs[i]));
-  }
-
+  memset(rknn_process->input_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
   rknn_process->output_attrs = (rknn_tensor_attr *)malloc(
       sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
-  memset(rknn_process->output_attrs, 0,
-         sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
+  memset(rknn_process->output_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
+  rknn_process->input_mems = (rknn_tensor_mem **)malloc(
+      sizeof(rknn_tensor_mem *) * rknn_process->io_num.n_input);
+  rknn_process->output_mems = (rknn_tensor_mem **)malloc(
+      sizeof(rknn_tensor_mem *) * rknn_process->io_num.n_output);
+
+  for (uint i = 0; i < rknn_process->io_num.n_input; i++) {
+    rknn_tensor_attr &attr = rknn_process->input_attrs[i];
+    attr.index = i;
+    rknn_query(rknn_process->ctx, RKNN_QUERY_NATIVE_INPUT_ATTR, &attr,
+               sizeof(rknn_tensor_attr));
+    dump_tensor_attr(&attr);
+    rknn_process->input_mems[i] = rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
+    rknn_set_io_mem(rknn_process->ctx, rknn_process->input_mems[i], &attr);
+  }
+
   for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
-    rknn_process->output_attrs[i].index = i;
-    ret =
-        rknn_query(rknn_process->ctx, RKNN_QUERY_OUTPUT_ATTR,
-                   &(rknn_process->output_attrs[i]), sizeof(rknn_tensor_attr));
-    dump_tensor_attr(&(rknn_process->output_attrs[i]));
+    rknn_tensor_attr &attr = rknn_process->output_attrs[i];
+    attr.index = i;
+    rknn_query(rknn_process->ctx, RKNN_QUERY_NATIVE_OUTPUT_ATTR, &attr,
+               sizeof(rknn_tensor_attr));
+    dump_tensor_attr(&attr);
+    rknn_process->output_mems[i] = rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
+    rknn_set_io_mem(rknn_process->ctx, rknn_process->output_mems[i], &attr);
   }
 
   int channel = 3;
@@ -120,74 +102,87 @@ int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context,
     width = attr.dims[2];
     channel = attr.dims[3];
   }
+  rknn_process->rga_input_buffer = wrapbuffer_fd(rknn_process->input_mems[0]->fd, width, height, RK_FORMAT_RGB_888);
 
   GST_DEBUG("model input height=%d, width=%d, channel=%d", height, width,
             channel);
 
-  rknn_process->inputs =
-      (rknn_input *)malloc(sizeof(rknn_input) * rknn_process->io_num.n_input);
-  memset(rknn_process->inputs, 0,
-         sizeof(rknn_input) * rknn_process->io_num.n_input);
-  rknn_process->inputs[0].index = attr.index;
-  rknn_process->inputs[0].type = RKNN_TENSOR_UINT8;
-  rknn_process->inputs[0].size = attr.size;
-  rknn_process->inputs[0].pass_through = 0;
-  rknn_process->inputs[0].fmt = attr.fmt;
-
   rknn_process->model_width = width;
   rknn_process->model_height = height;
   rknn_process->model_channel = channel;
-
-  // TODO: Prealloc output memory
-  rknn_process->outputs = (rknn_output *)malloc(sizeof(rknn_output) *
-                                                rknn_process->io_num.n_output);
-  memset(rknn_process->outputs, 0,
-         sizeof(rknn_output) * rknn_process->io_num.n_output);
-  for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
-    const rknn_tensor_attr attr = rknn_process->output_attrs[i];
-    rknn_process->outputs[i].index = attr.index;
-    rknn_process->outputs[i].want_float = 0; // 默认不需要
-    rknn_process->outputs[i].is_prealloc = false;
-    rknn_process->outputs[i].size = attr.size;
-  }
-
   int zp = rknn_process->output_attrs[1].zp;
   float scale = rknn_process->output_attrs[1].scale;
-  if (is_first_init) {
+  if (rknn_process->worker_id == 0) {
     fill_exp_table(boxes_exp, zp, scale);
   }
   return 0;
 }
 
+int rknn_preprocess(RknnEngine *engine, GstBuffer *raw_buffer) {
+
+  GstBuffer *src_buf = raw_buffer;
+
+  rga_buffer_t rga_src_buf;
+  rga_buffer_t rga_dst_buf = engine->rga_input_buffer;
+
+  GST_DEBUG("Converting buffer format using RGA");
+
+  // Convert GstBuffer to rga_buffer_t
+  gst_buffer_to_rga_buffer(src_buf, &rga_src_buf);
+
+  // Get dimensions from rga_buffer_t
+  int src_offset_x = engine->img_pad_left;
+  int src_offset_y = engine->img_pad_top;
+  int dst_offset_x = engine->model_pad_left;
+  int dst_offset_y = engine->model_pad_top;
+  int src_width =
+      engine->img_width - engine->img_pad_left - engine->img_pad_right;
+  int src_height =
+      engine->img_height - engine->img_pad_top - engine->img_pad_bottom;
+  int dst_width =
+      engine->model_width - engine->model_pad_left - engine->model_pad_right;
+  int dst_height =
+      engine->model_height - engine->model_pad_top - engine->model_pad_bottom;
+  GST_DEBUG("Src: %dx%d Dst %dx%d ", src_width, src_height, dst_width,
+            dst_height);
+  im_rect src_rect = {src_offset_x, src_offset_y, src_width, src_height};
+  im_rect dst_rect = {dst_offset_x, dst_offset_y, dst_width, dst_height};
+  GST_DEBUG("Src rect: %d,%d,%d,%d Dst rect: %d,%d,%d,%d", src_rect.x,
+            src_rect.y, src_rect.width, src_rect.height, dst_rect.x, dst_rect.y,
+            dst_rect.width, dst_rect.height);
+  int ret =
+      improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
+
+  if (ret != IM_STATUS_SUCCESS) {
+    GST_ERROR("RGA format conversion failed with error code: %d", ret);
+    return -1;
+  }
+
+  return TRUE;
+}
+
 int rknn_inference(struct RknnEngine *rknn_process) {
   int ret = 0;
-  // 执行推理
-
-  rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input,
-                  rknn_process->inputs);
   ret = rknn_run(rknn_process->ctx, NULL);
-  ret = rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output,
-                         rknn_process->outputs, NULL);
-
   return ret;
 }
 
 int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
                      float nms_threshold) {
   ResultData data;
-  data.boxes_confs.data = (int8_t *)rknn_process->outputs[0].buf;
+  data.boxes_confs.data = (int8_t *)rknn_process->output_mems[0]->virt_addr;
   data.boxes_confs.zp = rknn_process->output_attrs[0].zp;
   data.boxes_confs.scale = rknn_process->output_attrs[0].scale;
 
-  data.boxes.data = (int8_t *)rknn_process->outputs[1].buf;
+  data.boxes.data = (int8_t *)rknn_process->output_mems[1]->virt_addr;
   data.boxes.zp = rknn_process->output_attrs[1].zp;
   data.boxes.scale = rknn_process->output_attrs[1].scale;
 
-  data.kpts_confs.data = (int8_t *)rknn_process->outputs[2].buf;
+  data.kpts_confs.data = (int8_t *)rknn_process->output_mems[2]->virt_addr;
   data.kpts_confs.zp = rknn_process->output_attrs[2].zp;
   data.kpts_confs.scale = rknn_process->output_attrs[2].scale;
 
-  data.kpts.data = (int8_t *)rknn_process->outputs[3].buf;
+  data.kpts.data = (int8_t *)rknn_process->output_mems[3]->virt_addr;
   data.kpts.zp = rknn_process->output_attrs[3].zp;
   data.kpts.scale = rknn_process->output_attrs[3].scale;
 
@@ -197,14 +192,16 @@ int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
   data.boxes_exp = boxes_exp;
   post_process_i8(box_conf_threshold, nms_threshold, &data);
 
-  auto &r = rknn_process->results;
-  rknn_process->results_size = data.results.size();
+  auto &r = rknn_process->rknn_meta->results;
+  ;
+  auto rknn_meta = rknn_process->rknn_meta;
+  rknn_meta->results_size = data.results.size();
   float scale = rknn_process->scale_model_to_img;
   int model_pad_left = rknn_process->model_pad_left;
   int model_pad_top = rknn_process->model_pad_top;
   int img_pad_left = rknn_process->img_pad_left;
   int img_pad_top = rknn_process->img_pad_top;
-  for (int i = 0; i < rknn_process->results_size; i++) {
+  for (int i = 0; i < rknn_process->rknn_meta->results_size; i++) {
     auto &person = data.results[i];
     r[i][0] = (person.box.rect.x - model_pad_left) * scale - img_pad_left;
     r[i][1] = (person.box.rect.y - model_pad_top) * scale - img_pad_top;
@@ -231,7 +228,7 @@ int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
 #define COLOR_BLACK 0xFF000000
 #define COLOR_WHITE 0xFFFFFFFF
 void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output) {
-  const int boxes_num_max = rknn_process->results_size;
+  const int boxes_num_max = rknn_process->rknn_meta->results_size;
   const int kpts_num_max = 17 * boxes_num_max;
   rga_buffer_t rga_buf;
   gst_buffer_to_rga_buffer(output, &rga_buf);
@@ -242,8 +239,8 @@ void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output) {
   int kpts_num = 0;
   GST_DEBUG("rknn_visualize");
   // 画框
-  for (int i = 0; i < rknn_process->results_size; i++) {
-    float *data_entry = rknn_process->results[i];
+  for (int i = 0; i < rknn_process->rknn_meta->results_size; i++) {
+    float *data_entry = rknn_process->rknn_meta->results[i];
     float x1 = data_entry[0];
     float y1 = data_entry[1];
     float w = data_entry[2];
@@ -310,14 +307,14 @@ void rknn_release(struct RknnEngine *rknn_process) {
     free(rknn_process->input_attrs);
   if (rknn_process->output_attrs)
     free(rknn_process->output_attrs);
-  if (rknn_process->inputs)
-    free(rknn_process->inputs);
-  if (rknn_process->outputs)
-    free(rknn_process->outputs);
-  rknn_process->input_attrs = nullptr;
-  rknn_process->output_attrs = nullptr;
-  rknn_process->inputs = nullptr;
-  rknn_process->outputs = nullptr;
+  for (uint32_t i = 0; i < rknn_process->io_num.n_input; i++) {
+    rknn_destroy_mem(rknn_process->ctx, rknn_process->input_mems[i]);
+  }
+  free(rknn_process->input_mems);
+  for (uint32_t i = 0; i < rknn_process->io_num.n_output; i++) {
+    rknn_destroy_mem(rknn_process->ctx, rknn_process->output_mems[i]);
+  }
+  free(rknn_process->output_mems);
   rknn_destroy(rknn_process->ctx);
   if (rknn_process->model_data) {
     free(rknn_process->model_data);
@@ -485,14 +482,14 @@ void rknn_dump_io(struct RknnEngine *rknn_process) {
   // Dump 输入张量
   for (uint i = 0; i < rknn_process->io_num.n_input; i++) {
     const rknn_tensor_attr attr = rknn_process->input_attrs[i];
-    const rknn_input input = rknn_process->inputs[i];
-    dump_tensor_data("input", i, &attr, input.buf, input.size);
+    const rknn_tensor_mem *mem = rknn_process->input_mems[i];
+    dump_tensor_data("input", i, &attr, mem->virt_addr, mem->size);
   }
 
   // Dump 输出张量
   for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
     const rknn_tensor_attr attr = rknn_process->output_attrs[i];
-    const rknn_output output = rknn_process->outputs[i];
-    dump_tensor_data("output", i, &attr, output.buf, output.size);
+    const rknn_tensor_mem *mem = rknn_process->output_mems[i];
+    dump_tensor_data("output", i, &attr, mem->virt_addr, mem->size);
   }
 }

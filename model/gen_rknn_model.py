@@ -8,9 +8,10 @@ import cv2
 import os
 import sys
 # for sz in "nsmlx":
-#imgsz = (352, 640)
+imgsz = (352, 640)
+# imgsz = (416, 768)
 # imgsz = (448, 800)
-imgsz = (512, 960)
+# imgsz = (512, 960)
 from rknn.utils import onnx_edit
 
 onnx_outputs = [
@@ -20,12 +21,12 @@ onnx_outputs = [
         "/model.23/Slice_2_output_0", # 1x34x4620 关键点的坐标（需后处理）
     ]
 
-for sz in "l":
+for sz in "ml":
     for DEFAULT_QUANT in [True]:
 
         if isinstance(imgsz, int):
             imgsz = (imgsz, imgsz)
-        file_path_prefix = f"model/yolo11{sz}-pose"
+        file_path_prefix = f"yolo11{sz}-pose"
         pt_path = file_path_prefix + ".pt"
         onnx_path = file_path_prefix + f"_{imgsz[0]}_{imgsz[1]}" + ".onnx"
         optimized_onnx_path = file_path_prefix + f"_{imgsz[0]}_{imgsz[1]}" + "_opt.onnx"

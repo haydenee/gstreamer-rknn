@@ -1,5 +1,4 @@
-#include "rknnprocess.h"
-#include "rknnmeta.h"
+#include "rknn_meta.h"
 #include <string.h>
 
 GType gst_rknn_meta_api_get_type(void) {

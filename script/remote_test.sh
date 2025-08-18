@@ -10,8 +10,8 @@ REMOTE_HOST="root@opi-003"
 REMOTE_DIR="/root/gstreamer-rknn"
 LOG_FILE="log"
 MP4_FILE="test.mp4"
-TEST_SCRIPT="./script/image_stream_test.sh"
-TIMEOUT=15
+TEST_SCRIPT="./script/test.sh"
+TIMEOUT=5
 # TEST_SCRIPT="./build/test/yolo11pose_test"
 
 echo "=== 开始远程测试流程 ==="

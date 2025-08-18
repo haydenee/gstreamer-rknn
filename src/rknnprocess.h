@@ -1,35 +1,30 @@
 #ifndef _RKNN_PROCESS_H_
 #define _RKNN_PROCESS_H_
-#include "rknn_api.h"
 #include <gst/gst.h>
+#include <glib/gasyncqueue.h>
+#include <im2d.h>
+#include "rknn_api.h"
+#include "rknn_meta.h"
 
-#define MAX_PERSON 128
-
-struct RknnMeta {
-  GstClockTime start_time;
-  GstClockTime preprocess_time;
-  GstClockTime queue_time;
-  GstClockTime infer_time;
-  GstClockTime postprocess_time;
-  GstClockTime visualize_time;
-  GstClockTime end_time;
-
-  float results[MAX_PERSON][56];
-  int results_size;
-};
 
 struct RknnEngine {
+  GstObject* filter;
+  // queue
+  GAsyncQueue* rknn_input_queue;
+  GAsyncQueue* rknn_output_queue;
   // loading
   int worker_id;
   unsigned char *model_data;
   char *model_path;
   // rknn api
+  rknn_context* worker_0_ctx;
   rknn_context ctx;
-  rknn_input *inputs;
-  rknn_output *outputs;
   rknn_input_output_num io_num;
   rknn_tensor_attr *input_attrs;
   rknn_tensor_attr *output_attrs;
+  rknn_tensor_mem **input_mems;
+  rknn_tensor_mem **output_mems; 
+  rga_buffer_t rga_input_buffer;
   // shapes
   int model_width;
   int model_height;
@@ -48,8 +43,7 @@ struct RknnEngine {
   float scale_img_to_model;
   float scale_model_to_img;
   // results
-  float results[MAX_PERSON][56];
-  int results_size;
+  struct RknnMeta* rknn_meta;
 };
 
 
@@ -57,13 +51,11 @@ struct RknnEngine {
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context, int core);
+int rknn_init_process(struct RknnEngine *rknn_process);
+int rknn_preprocess(struct RknnEngine* engine, GstBuffer* raw_buffer);
 int rknn_inference(struct RknnEngine *rknn_process);
-
 int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
                      float nms_threshold);
-
 void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output_buffer);
 void rknn_dump_io(struct RknnEngine *rknn_process);
 void rknn_release(struct RknnEngine *rknn_process);

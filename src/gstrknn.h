@@ -89,6 +89,7 @@ G_DECLARE_FINAL_TYPE(GstPluginRknn, gst_plugin_rknn,
 struct _GstPluginRknn {
     GstElement element;
     
+    GstClock* clock;
     GstPad* sinkpad;
     GstPad* srcpad;
     
@@ -98,13 +99,9 @@ struct _GstPluginRknn {
     gchar* resize_mode;
     gboolean mppjpegdec_offset_workaround;
     gboolean draw_boxes;
-    GAsyncQueue* rknn_input_queue;
-    GAsyncQueue* rknn_output_queue;
-    GAsyncQueue* raw_input_queue;
-    GAsyncQueue* raw_output_queue;
-    guint64 next_output_offset;
-    GList* out_of_order_buffers;
-    GThread* output_collector_thread;
+    GAsyncQueue* workers_queue;
+    gint next_worker_id;
+    GThread* push_thread;
     GThread** task_threads;
 
     GstCaps* sink_caps;
@@ -118,10 +115,6 @@ struct _GstPluginRknn {
     GstVideoFormat sink_format;
     gint img_width;
     gint img_height;
-
-    
-    // 缓冲区池 - 用于替代直接创建缓冲区
-    GstVideoBufferPool* rknn_buffer_pool;      // RKNN输入缓冲区池
 
 };
 

@@ -11,5 +11,6 @@
     },
     "clangd.arguments": [
         "--compile-commands-dir=${workspaceFolder}/build-aarch64"
-    ]
+    ],
+    "C_Cpp.clang_format_style": "file:/workspace/.clang-format"
 }

@@ -59,6 +59,7 @@ Build
 *.trs
 
 *.mp4
+*.mov
 
 /build
 /subprojects
