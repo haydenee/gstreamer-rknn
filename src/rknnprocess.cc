@@ -3,13 +3,14 @@
 #include <string.h>
 #include <string>
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #include "rknnprocess.h"
-#include "postprocess.h"
+#include "im2d_type.h"
 #include "rknn_api.h"
-#include "rgaprocess.h"
 #include "cnpy/cnpy.h"
-
+#include "postprocess.h"
+#include "rgaprocess.h"
 
 GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
@@ -17,12 +18,9 @@ GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
 static unsigned char* load_data(FILE* fp, size_t ofst, size_t sz);
 static unsigned char* load_model(const char* filename, int* model_size);
 static void dump_tensor_attr(rknn_tensor_attr* attr);
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 static float boxes_exp[256];
-int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
+int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context, int core)
 {
     int ret;
     /* Create the neural network */
@@ -59,7 +57,7 @@ int rknn_prepare(struct RknnEngine* rknn_process, rknn_context* shared_context)
         }
         is_first_init = true;
     }
-
+    rknn_set_core_mask(rknn_process->ctx, (rknn_core_mask)(1 << core));
     rknn_sdk_version version;
     ret = rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version, sizeof(rknn_sdk_version));
     if (ret < 0) {
@@ -163,14 +161,6 @@ int rknn_postprocess(
     float nms_threshold
 )
 {
-    // Construct ResultData
-
-    // const string image_name = "input_0_int8_1x352x640x3";
-    // const string boxes_confs_name = "output_0_int8_1x1x4620";
-    // const string boxes_name = "output_1_int8_1x64x4620";
-    // const string kpts_confs_name = "output_2_int8_1x17x1x4620";
-    // const string kpts_name = "output_3_int8_1x17x2x4620";
-
     ResultData data;
     data.boxes_confs.data = (int8_t*)rknn_process->outputs[0].buf;
     data.boxes_confs.zp = rknn_process->output_attrs[0].zp;
@@ -229,8 +219,13 @@ void rknn_visualize(
     struct RknnEngine* rknn_process,
     GstBuffer* output)
 {
+    const int boxes_num = rknn_process->results_size;  
+    const int kpts_num = 17 * boxes_num;
     rga_buffer_t rga_buf;
     gst_buffer_to_rga_buffer(output, &rga_buf);
+
+    im_rect* boxes_rect_arr = (im_rect*)malloc(sizeof(im_rect) * boxes_num);
+    im_rect* kpts_rect_arr = (im_rect*)malloc(sizeof(im_rect) * kpts_num);
     GST_DEBUG("rknn_visualize");
     // 画框
     for (int i = 0; i < rknn_process->results_size; i++) {
@@ -246,21 +241,37 @@ void rknn_visualize(
         int x2i = 2 * int(x2 / 2);
         int y1i = 2 * int(y1 / 2);
         int y2i = 2 * int(y2 / 2);
-        im_rect rect = {x1i, y1i, x2i - x1i, y2i - y1i};
-        imrectangle(rga_buf, rect, COLOR_GREEN, 4);
-        GST_TRACE("box %.2f @ (%.2f %.2f %.2f %.2f)", data_entry[4], x1, y1, x2, y2);
+        boxes_rect_arr[i] = {x1i, y1i, x2i - x1i, y2i - y1i};
+        GST_TRACE("box conf %.2f @ (%.2f %.2f %.2f %.2f)", data_entry[4], x1, y1, x2, y2);
         // 17 个关键点
         for (int j = 0; j < 17; j++) {
             float x = data_entry[j * 3 + 5];
             float y = data_entry[j * 3 + 6];
             int xi = 2 * int(x / 2);
             int yi = 2 * int(y / 2);
-            im_rect rect = {xi - 4, yi - 4, 8, 8};
-            imrectangle(rga_buf, rect, COLOR_RED, 4);
-            GST_TRACE("> point %.2f @ (%.2f, %.2f)", data_entry[j * 3 + 7], x, y);
+            kpts_rect_arr[i * 17 + j] = {xi - 4, yi - 4, 8, 8};
+            GST_TRACE("> point conf %.2f @ (%.2f, %.2f)", data_entry[j * 3 + 7], x, y);
         }
     }
+
+    GST_DEBUG("worker %d rknn_visualize start", rknn_process->worker_id);
+    // GstMapInfo map_info;
+    // gst_buffer_map(output, &map_info, GST_MAP_READWRITE);
+    
+    while (imrectangleArray( rga_buf, boxes_rect_arr, boxes_num, COLOR_GREEN, 4) != IM_STATUS_SUCCESS) {
+        GST_WARNING("imrectangleArray failed, retry in 1000us");
+        usleep(1000);
+    }
+    while (imfillArray( rga_buf, kpts_rect_arr, kpts_num, COLOR_RED) != IM_STATUS_SUCCESS) {
+        GST_WARNING("imfillArray failed, retry in 1000us");
+        usleep(1000);
+    };
+    // gst_buffer_unmap(output, &map_info);
+    free(boxes_rect_arr);
+    free(kpts_rect_arr);
+    GST_DEBUG("worker %d rknn_visualize done", rknn_process->worker_id);
 }
+
 
 void rknn_release(struct RknnEngine* rknn_process) 
 {
@@ -277,9 +288,6 @@ void rknn_release(struct RknnEngine* rknn_process)
         free(rknn_process->model_data);
     }
 }
-#ifdef __cplusplus
-}
-#endif
 
 static void dump_tensor_attr(rknn_tensor_attr* attr)
 {

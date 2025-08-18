@@ -18,7 +18,6 @@ int calc_buffer_size(int width, int height, GstVideoFormat gst_format);
 // RGA buffer processing functions
 int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf);
 int raw_to_rknn(struct RknnEngine* obj, GstBuffer* src_buf, GstBuffer* dst_buf);
-int test_draw_rectangle(GstBuffer* src_buf);
 #ifdef __cplusplus
 }
 #endif

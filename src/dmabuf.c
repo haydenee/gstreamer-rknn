@@ -277,6 +277,8 @@ error:
   return NULL;
 }
 
+
+
 // Buffer logging function
 void log_buffer_info(GstBuffer *buf) {
   if (!buf) {
@@ -293,16 +295,20 @@ void log_buffer_info(GstBuffer *buf) {
             ", Offset: %" G_GUINT64_FORMAT
             ", Size: %u bytes",
             GST_TIME_ARGS(pts), offset, size);
-
+  
   // 打印 buffer 中所有的内存块信息
   guint num_mems = gst_buffer_n_memory(buf);
-  GST_DEBUG("Buffer contains %u memory blocks:", num_mems);
+  GST_TRACE("Buffer contains %u memory blocks:", num_mems);
   
   for (guint i = 0; i < num_mems; i++) {
     GstMemory *mem = gst_buffer_peek_memory(buf, i);
     if (mem) {
       GstMapInfo map_info;
-      
+      int is_dmabuf = gst_is_dmabuf_memory(mem);
+      GST_TRACE("is dmabuf: %s", is_dmabuf ? "yes" : "no");
+      if (is_dmabuf) {
+        GST_TRACE("dmabuf fd: %d", gst_dmabuf_memory_get_fd(mem));
+      }
       // 尝试映射内存以获取更多信息
       if (gst_memory_map(mem, &map_info, GST_MAP_READ)) {
         GST_TRACE("  Memory block %u - Size: %" G_GSIZE_FORMAT
@@ -350,6 +356,7 @@ void log_buffer_info(GstBuffer *buf) {
 
   // 尝试从 buffer 获取视频元数据
   GstVideoMeta *meta = gst_buffer_get_video_meta(buf);
+  
   if (meta) {
     // 从 GstVideoMeta 获取 width, height 和 stride 信息
     guint width = meta->width;

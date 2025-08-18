@@ -1,18 +1,10 @@
+#include <cstdio>
+#include <cmath>
+#include <gst/gst.h>
+#include <gst/allocators/gstdmabuf.h>
+#include <im2d.hpp>
 #include "rgaprocess.h"
-#include "RgaUtils.h"
 #include "dmabuf.h"
-#include "gst/gstmemory.h"
-#include "gst/gstbufferpool.h"
-#include "gst/gststructure.h"
-#include "im2d_type.h"
-#include "opencv2/core/core.hpp"
-#include "opencv2/imgcodecs.hpp"
-#include "opencv2/imgproc.hpp"
-#include "gst/allocators/gstdmabuf.h"
-#include "gst/video/video-info.h"
-#include "gst/gstinfo.h"
-#include "gstrknn.h"
-#include <math.h>
 
 
 GST_DEBUG_CATEGORY_EXTERN (gst_plugin_rknn_debug);
@@ -166,25 +158,28 @@ int calc_buffer_size(int width, int height, GstVideoFormat gst_format)
 int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
 {
     if (!gst_buf || !rga_buf) {
+        GST_ERROR("invalid buffer: gst_buf %p rga_buf %p", gst_buf, rga_buf);
         return -1;
     }
 
     GstMemory* mem = gst_buffer_peek_memory(gst_buf, 0);
     if (!mem || !gst_is_dmabuf_memory(mem)) {
+        GST_ERROR("invalid memory: mem %p", mem);
         return -1;
     }
 
     int fd = gst_dmabuf_memory_get_fd(mem);
     if (fd < 0) {
+        GST_ERROR("invalid dmabuf fd: %d", fd);
         return -1;
     }
 
     GstVideoMeta* meta = gst_buffer_get_video_meta(gst_buf);
-
     GstVideoFormat format = meta->format;
     gint width = meta->width;
     gint height = meta->height;
     const GstVideoFormatInfo* format_info = gst_video_format_get_info(format);
+
     gint wstride = meta->stride[0] / format_info->pixel_stride[0]; 
     // 注意，mpp 有一个 bug，它返回的 NV12/NV16 格式的 buffer，UV 平面的 offset 是错的，实际对齐到了 16 像素但给的 offset 对齐到了 2。
     // 加了个选项 mppjpegdec_offset_workaround 修了。
@@ -193,29 +188,15 @@ int gst_buffer_to_rga_buffer(GstBuffer* gst_buf, rga_buffer_t* rga_buf)
     GST_TRACE("stride: %d %d %d %d", meta->stride[0], meta->stride[1], meta->stride[2], meta->stride[3]);
     GST_TRACE("offset: %zu %zu %zu %zu", meta->offset[0], meta->offset[1], meta->offset[2], meta->offset[3]);
     RgaSURF_FORMAT rga_format = gst_to_rga_format(format);
+
     if (rga_format == RK_FORMAT_UNKNOWN) {
         return -1;
     }
     
     // Assuming height is hstride.
     *rga_buf = wrapbuffer_fd_t(fd, width, height, wstride, hstride, rga_format);
+
     GST_DEBUG("Wrapping: fd:%d width:%d height:%d wstride:%d hstride:%d format:%d", fd, width, height, wstride, hstride, (int)rga_format);
-    return 0;
-}
-
-int test_draw_rectangle(GstBuffer* src_buf) {
-    rga_buffer_t rga_buf;
-    gst_buffer_to_rga_buffer(src_buf, &rga_buf);
-    im_rect rect;
-    rect.width = 100;
-    rect.height = 100;
-    rect.x = 100;
-    rect.y = 100;
-    int ret = imcheck({}, rga_buf, {}, rect, IM_COLOR_FILL);
-    GST_DEBUG("imcheck ret %d", ret);
-    ret = imrectangle(rga_buf, rect, 0x80808080, 10);
-
-    GST_DEBUG("test imrectangle ret %d", ret);
     return 0;
 }
 
@@ -277,13 +258,15 @@ int raw_to_rknn(struct RknnEngine* engine, GstBuffer* src_buf, GstBuffer* dst_bu
     
     GST_DEBUG("Performing RGA format conversion");
     int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
+    
+    GST_DEBUG("Performing RGA format conversion completed");
+
     if (ret != IM_STATUS_SUCCESS) {
         GST_ERROR("RGA format conversion failed with error code: %d", ret);
         return -1;
     }
     gst_buffer_unmap(src_buf, &src_map);
     gst_buffer_unmap(dst_buf, &dst_map);
-    GST_DEBUG("Format conversion completed successfully");
     return 0;
 }
 

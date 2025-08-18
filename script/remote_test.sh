@@ -11,6 +11,7 @@ REMOTE_DIR="/root/gstreamer-rknn"
 LOG_FILE="log"
 MP4_FILE="test.mp4"
 TEST_SCRIPT="./script/image_stream_test.sh"
+TIMEOUT=15
 # TEST_SCRIPT="./build/test/yolo11pose_test"
 
 echo "=== 开始远程测试流程 ==="
@@ -33,8 +34,8 @@ ssh $REMOTE_HOST "cd $REMOTE_DIR && \
     ninja install"
 
 # 3. 执行测试脚本，5秒后强制退出，将 stderr 和 stdout 重定向到 /tmp/log
-echo "3. 执行 image_stream_test.sh 测试（5秒后强制退出）..."
-ssh $REMOTE_HOST "cd $REMOTE_DIR && timeout 5 $TEST_SCRIPT > $LOG_FILE 2>&1 || true"
+echo "3. 执行 image_stream_test.sh 测试（$TIMEOUT 秒后强制退出）..."
+ssh $REMOTE_HOST "cd $REMOTE_DIR && timeout $TIMEOUT $TEST_SCRIPT > $LOG_FILE 2>&1 || true"
 
 # 4. 使用 scp 下载日志文件到本地，并清理控制字符
 echo "4. 下载日志文件到本地..."

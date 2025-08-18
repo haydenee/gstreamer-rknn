@@ -7,6 +7,7 @@
 
 struct RknnEngine {
   // loading
+  int worker_id;
   unsigned char *model_data;
   char *model_path;
   // rknn api
@@ -42,7 +43,7 @@ struct RknnEngine {
 extern "C" {
 #endif
 
-int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context);
+int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context, int core);
 int rknn_inference(struct RknnEngine *rknn_process);
 
 int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
