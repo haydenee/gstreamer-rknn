@@ -32,7 +32,7 @@ CMD="gst-launch-1.0 -e \
     ! video/x-raw,framerate=30/1 \
     ! rknn workers=3 \
         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
-        draw_boxes=false \
+        draw_boxes=true \
         resize_mode=crop \
         mppjpegdec_offset_workaround=0 \
     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \

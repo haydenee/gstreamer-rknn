@@ -441,16 +441,19 @@ static gpointer work_thread(gpointer data) {
               raw_buffer->offset);
     rknn_outputs_release(rknn_engine->ctx, rknn_engine->io_num.n_output,
                          rknn_engine->outputs);
+    GstClockTime end_post_process_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
     
     if (filter->draw_boxes) {
       rknn_visualize(rknn_engine, raw_buffer);
     }
 
-    GstClockTime end_post_process_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+    GstClockTime end_visualize_time = gst_clock_get_time(GST_ELEMENT_CLOCK(filter));
+
     GstClockTime infer_time_us = (end_infer_time - start_time) / GST_USECOND;
     GstClockTime post_process_time_us = (end_post_process_time - end_infer_time) / GST_USECOND;
-    GST_INFO("Thread %d offset %zu done %d person detected infer %lu us post process %lu us", worker_id,
-             raw_buffer->offset, rknn_engine->results_size, infer_time_us, post_process_time_us);
+    GstClockTime visualize_time_us = (end_visualize_time - end_post_process_time) / GST_USECOND;
+    GST_INFO("Thread %d offset %zu done %d person detected infer %lu us post process %lu us visualize %lu us", worker_id,
+             raw_buffer->offset, rknn_engine->results_size, infer_time_us, post_process_time_us, visualize_time_us);
 
     gst_memory_unmap(rknn_mem, &rknn_map_info);
     gst_memory_unmap(raw_mem, &rgb_map_info);
