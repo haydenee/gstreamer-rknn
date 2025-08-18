@@ -21,6 +21,7 @@ gstvideo_dep = dependency('gstreamer-video-1.0', version : gst_version_req,
 gstpbutils_dep = dependency('gstreamer-pbutils-1.0', version : gst_version_req,
   fallback : ['gst-plugins-base', 'pbutils_dep'])
 opencv_dep = dependency('opencv4', required : false)
+pthread_dep = dependency('threads')
 
 project_source_root = meson.project_source_root()
 rga_dep = dependency('librga', required : false)

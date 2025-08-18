@@ -8,7 +8,9 @@ import cv2
 import os
 import sys
 # for sz in "nsmlx":
-imgsz = (352, 640)
+#imgsz = (352, 640)
+# imgsz = (448, 800)
+imgsz = (512, 960)
 from rknn.utils import onnx_edit
 
 onnx_outputs = [

@@ -26,7 +26,7 @@ library('gstrknn',
   plugin_sources,
   c_args: plugin_c_args,
   include_directories: plugin_include_dirs,
-  dependencies : [gst_dep, gstbase_dep, gstallocators_dep, gstvideo_dep, gstpbutils_dep, rga_dep, rknn_dep,rga_dep,opencv_dep],
+  dependencies : [gst_dep, gstbase_dep, gstallocators_dep, gstvideo_dep, gstpbutils_dep, rga_dep, rknn_dep, rga_dep, opencv_dep, pthread_dep],
   install : true,
   install_dir : plugins_install_dir,
 )

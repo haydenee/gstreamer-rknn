@@ -50,7 +50,6 @@ int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
                      float nms_threshold);
 
 void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output_buffer);
-
 void rknn_dump_io(struct RknnEngine *rknn_process);
 void rknn_release(struct RknnEngine *rknn_process);
 

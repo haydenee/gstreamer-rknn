@@ -44,7 +44,7 @@ struct ResultData {
 };
 
 void fill_exp_table(float* exp_table, int zp, float scale);
-void post_process(float conf_threshold, float nms_threshold, ResultData* data);
+void post_process_i8(float conf_threshold, float nms_threshold, ResultData* data);
 
 #ifdef __cplusplus
 }

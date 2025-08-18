@@ -59,7 +59,6 @@ int rknn_prepare(struct RknnEngine *rknn_process, rknn_context *shared_context,
     }
     is_first_init = true;
   }
-  rknn_set_core_mask(rknn_process->ctx, (rknn_core_mask)(1 << core));
   rknn_sdk_version version;
   ret = rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version,
                    sizeof(rknn_sdk_version));
@@ -196,7 +195,7 @@ int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
   data.width = rknn_process->model_width;
   data.count = data.height * data.width * 21 / 1024;
   data.boxes_exp = boxes_exp;
-  post_process(box_conf_threshold, nms_threshold, &data);
+  post_process_i8(box_conf_threshold, nms_threshold, &data);
 
   auto &r = rknn_process->results;
   rknn_process->results_size = data.results.size();

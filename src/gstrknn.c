@@ -1,4 +1,5 @@
-
+#define _GNU_SOURCE
+#include "rknn_api.h"
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -12,6 +13,11 @@
 #include <gst/gst.h>
 #include <gst/video/gstvideopool.h>
 #include <math.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include "dmabuf.h"
@@ -396,6 +402,17 @@ static gpointer work_thread(gpointer data) {
   GstPluginRknn *filter = thread_data->filter;
   gint worker_id = thread_data->worker_id;
   struct RknnEngine *rknn_engine = filter->rknn_engines[worker_id];
+
+  // 绑定 CPU 和 NPU 核心
+  int npu_core = worker_id % 3;
+  rknn_core_mask npu_core_mask = npu_core == 0 ? RKNN_NPU_CORE_0 : npu_core == 1 ? RKNN_NPU_CORE_1 : RKNN_NPU_CORE_2;
+  rknn_set_core_mask(rknn_engine->ctx, npu_core_mask);
+  int cpu_core = worker_id % 3 + 4; // 4-7 是大核
+  cpu_set_t cpuset;
+  pthread_t current_thread = pthread_self();
+  CPU_ZERO(&cpuset);
+  CPU_SET(cpu_core, &cpuset);
+  pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
 
   GST_INFO("Starting RKNN engine thread %d", worker_id);
   while (TRUE) {

@@ -116,7 +116,7 @@ float calculate_overlap(const Rect &rect0, const Rect &rect1) {
   return u <= 0.f ? 0.f : (i / u);
 }
 
-void post_process(float conf_threshold, float nms_threshold, ResultData *data) {
+void post_process_i8(float conf_threshold, float nms_threshold, ResultData *data) {
 
   GST_DEBUG("post_process start conf_threshold %f nms_threshold %f", conf_threshold, nms_threshold);
   // prefill exp table
