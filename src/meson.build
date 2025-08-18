@@ -12,6 +12,7 @@ configure_file(output : 'config.h', configuration : cdata)
 # Plugin
 plugin_sources = [
   'gstrknn.c',
+  'rknnmeta.c',
   'rgaprocess.cc',
   'rknnprocess.cc',
   'postprocess.cc',

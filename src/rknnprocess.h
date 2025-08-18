@@ -17,6 +17,7 @@ struct RknnMeta {
   float results[MAX_PERSON][56];
   int results_size;
 };
+
 struct RknnEngine {
   // loading
   int worker_id;
