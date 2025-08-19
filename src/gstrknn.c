@@ -253,6 +253,9 @@ gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
   struct RknnMeta* rknn_meta = &gst_buffer_get_rknn_meta(raw_buffer)->rknn_meta;
   rknn_meta->start_time = gst_clock_get_time(filter->clock);
   struct RknnEngine *rknn_engine = filter->rknn_engines[filter->next_worker_id];
+  while (g_async_queue_length(filter->workers_queue) > 3) {
+    g_usleep(1000);
+  }
   g_async_queue_push(filter->workers_queue, rknn_engine);
   g_async_queue_push(rknn_engine->rknn_input_queue, raw_buffer);
   GST_DEBUG("Scheduler push buffer %lu to worker %d",

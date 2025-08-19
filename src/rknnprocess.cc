@@ -58,10 +58,12 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
 
   rknn_process->input_attrs = (rknn_tensor_attr *)malloc(
       sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
-  memset(rknn_process->input_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
+  memset(rknn_process->input_attrs, 0,
+         sizeof(rknn_tensor_attr) * rknn_process->io_num.n_input);
   rknn_process->output_attrs = (rknn_tensor_attr *)malloc(
       sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
-  memset(rknn_process->output_attrs, 0, sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
+  memset(rknn_process->output_attrs, 0,
+         sizeof(rknn_tensor_attr) * rknn_process->io_num.n_output);
   rknn_process->input_mems = (rknn_tensor_mem **)malloc(
       sizeof(rknn_tensor_mem *) * rknn_process->io_num.n_input);
   rknn_process->output_mems = (rknn_tensor_mem **)malloc(
@@ -73,7 +75,8 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
     rknn_query(rknn_process->ctx, RKNN_QUERY_NATIVE_INPUT_ATTR, &attr,
                sizeof(rknn_tensor_attr));
     dump_tensor_attr(&attr);
-    rknn_process->input_mems[i] = rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
+    rknn_process->input_mems[i] =
+        rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
     rknn_set_io_mem(rknn_process->ctx, rknn_process->input_mems[i], &attr);
   }
 
@@ -83,7 +86,8 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
     rknn_query(rknn_process->ctx, RKNN_QUERY_NATIVE_OUTPUT_ATTR, &attr,
                sizeof(rknn_tensor_attr));
     dump_tensor_attr(&attr);
-    rknn_process->output_mems[i] = rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
+    rknn_process->output_mems[i] =
+        rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
     rknn_set_io_mem(rknn_process->ctx, rknn_process->output_mems[i], &attr);
   }
 
@@ -102,7 +106,8 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
     width = attr.dims[2];
     channel = attr.dims[3];
   }
-  rknn_process->rga_input_buffer = wrapbuffer_fd(rknn_process->input_mems[0]->fd, width, height, RK_FORMAT_RGB_888);
+  rknn_process->rga_input_buffer = wrapbuffer_fd(
+      rknn_process->input_mems[0]->fd, width, height, RK_FORMAT_RGB_888);
 
   GST_DEBUG("model input height=%d, width=%d, channel=%d", height, width,
             channel);
@@ -256,7 +261,9 @@ void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output) {
     x2i = std::min(rknn_process->img_width, x2i);
     y1i = std::max(0, y1i);
     y2i = std::min(rknn_process->img_height, y2i);
-    boxes_rect_arr[boxes_num++] = {x1i, y1i, x2i - x1i, y2i - y1i};
+    if (x1i < x2i && y1i < y2i) {
+      boxes_rect_arr[boxes_num++] = {x1i, y1i, x2i - x1i, y2i - y1i};
+    }
     GST_TRACE("box conf %.2f @ (%.2f %.2f %.2f %.2f)", data_entry[4], x1, y1,
               x2, y2);
     // 17 个关键点
