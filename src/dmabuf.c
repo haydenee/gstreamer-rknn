@@ -277,7 +277,58 @@ error:
   return NULL;
 }
 
-
+GstBuffer* dma_buffer_new(size_t mem_count, size_t* sizes) {
+  GstBuffer *buffer = NULL;
+  GstAllocator *allocator = NULL;
+  guint i;
+  
+  // 确保 dma heap 已打开
+  if (!dmabuf_heap_open()) {
+    GST_ERROR("Failed to open dmabuf heap.\n");
+    return NULL;
+  }
+  
+  // 创建新的 buffer
+  buffer = gst_buffer_new();
+  if (!buffer) {
+    GST_ERROR("Failed to create new buffer.\n");
+    return NULL;
+  }
+  
+  // 创建 DMA-BUF allocator
+  allocator = gst_dmabuf_allocator_new();
+  if (!allocator) {
+    GST_ERROR("Failed to create GstDmaBufAllocator.\n");
+    gst_buffer_unref(buffer);
+    return NULL;
+  }
+  
+  // 用通过 dma heap 分配 fd 的覆盖默认行为
+  GstAllocatorClass *allocator_class = GST_ALLOCATOR_GET_CLASS(allocator);
+  allocator_class->alloc = dmabuf_allocator_alloc;
+  
+  // 为每个内存块分配并添加到 buffer
+  for (i = 0; i < mem_count; i++) {
+    GstMemory *mem;
+    
+    // 使用自定义 allocator 分配内存
+    mem = dmabuf_allocator_alloc(allocator, sizes[i], NULL);
+    if (!mem) {
+      GST_ERROR("Failed to allocate memory block %u of size %zu\n", i, sizes[i]);
+      gst_buffer_unref(buffer);
+      gst_object_unref(allocator);
+      return NULL;
+    }
+    
+    // 将内存块添加到 buffer
+    gst_buffer_append_memory(buffer, mem);
+  }
+  
+  // 释放 allocator 引用
+  gst_object_unref(allocator);
+  
+  return buffer;
+}
 
 // Buffer logging function
 void log_buffer_info(GstBuffer *buf) {

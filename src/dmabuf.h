@@ -40,6 +40,9 @@ void log_buffer_info(GstBuffer* buf);
 // Buffer pool creation function
 GstVideoBufferPool* dma_buffer_pool_new(GstVideoFormat format, gint width, gint height, gint w_align, gint h_align);
 
+// Buffer creation function
+GstBuffer* dma_buffer_new(size_t mem_count, size_t* sizes);
+
 G_END_DECLS
 
 #endif /* __DMA_BUF_H__ */

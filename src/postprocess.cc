@@ -12,7 +12,6 @@ struct GridPos {
   int i;
   int j;
 };
-
 inline float sigmoid(float x) { return 1.0 / (1.0 + expf(-x)); }
 
 inline float unsigmoid(float y) { return -1.0 * logf((1.0 / y) - 1.0); }
@@ -168,10 +167,38 @@ void post_process_i8(float conf_threshold, float nms_threshold, ResultData *data
       int index = box.index;
       GridPos pos = grid_pos_from_index(index, data);
       for (int j = 0; j < 17; j++) {
-        int x_idx = j * 2 * data->count + 0 * data->count +
-                    index; // kpts.data: 1x17x2xcount
-        int y_idx = j * 2 * data->count + 1 * data->count + index;
-        int conf_idx = j * data->count + index; // kpts_confs.data: 1x17x1xcount
+
+        int j1 = j / 16;
+        int j2 = j % 16;
+        // kpts.data: NC1HWC2, 1 x 2 x 2 x count x 16
+        // kpts_conf.data: NC1HWC2, 1 x 2 x 1 x count x 16
+
+        // x_idx = kpts.data[0][j1][0][index][j2]
+        // y_idx = kpts.data[0][j1][1][index][j2]
+        // conf_idx = kpts_confs.data[0][j1][0][index][j2]
+        
+        
+
+        int x_idx = 0 * (2 * 2 * data->count * 16) +    // N=0
+                    j1 * (2 * data->count * 16) +       // C1=j1
+                    0 * (data->count * 16) +            // H=0 (x坐标)
+                    index * 16 +                        // W=index
+                    j2;                                 // C2=j2
+
+        int y_idx = 0 * (2 * 2 * data->count * 16) +    // N=0
+                    j1 * (2 * data->count * 16) +       // C1=j1
+                    1 * (data->count * 16) +            // H=1 (y坐标)
+                    index * 16 +                        // W=index
+                    j2;                                 // C2=j2
+    
+        int conf_idx = 0 * (2 * 1 * data->count * 16) + // N=0
+                    j1 * (2 * 1 * data->count * 16) +   // C1=j1
+                    0 * (data->count * 16) +            // H=0
+                    index * 16 +                        // W=data->count
+                    j2;                                 // C2=j2
+
+
+        GST_TRACE("x_idx %d, y_idx %d, conf_idx %d", x_idx, y_idx, conf_idx);
         float x = dequantize_affine_i8_to_f32(data->kpts.data[x_idx],
                                               data->kpts.zp, data->kpts.scale);
         float y = dequantize_affine_i8_to_f32(data->kpts.data[y_idx],

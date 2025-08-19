@@ -12,5 +12,7 @@
     "clangd.arguments": [
         "--compile-commands-dir=${workspaceFolder}/build-aarch64"
     ],
-    "C_Cpp.clang_format_style": "file:/workspace/.clang-format"
+    "C_Cpp.clang_format_style": "file:/workspace/.clang-format",
+    "wolf.logErrors": true,
+    "wolf.pythonPath": "/usr/bin/python3"
 }

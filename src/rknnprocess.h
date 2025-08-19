@@ -1,29 +1,28 @@
 #ifndef _RKNN_PROCESS_H_
 #define _RKNN_PROCESS_H_
-#include <gst/gst.h>
-#include <glib/gasyncqueue.h>
-#include <im2d.h>
 #include "rknn_api.h"
 #include "rknn_meta.h"
-
+#include <glib/gasyncqueue.h>
+#include <gst/gst.h>
+#include <im2d.h>
 
 struct RknnEngine {
-  GstObject* filter;
+  GstObject *filter;
   // queue
-  GAsyncQueue* rknn_input_queue;
-  GAsyncQueue* rknn_output_queue;
+  GAsyncQueue *rknn_input_queue;
+  GAsyncQueue *rknn_output_queue;
   // loading
   int worker_id;
   unsigned char *model_data;
   char *model_path;
   // rknn api
-  rknn_context* worker_0_ctx;
+  rknn_context *worker_0_ctx;
   rknn_context ctx;
   rknn_input_output_num io_num;
   rknn_tensor_attr *input_attrs;
   rknn_tensor_attr *output_attrs;
   rknn_tensor_mem **input_mems;
-  rknn_tensor_mem **output_mems; 
+  rknn_tensor_mem **output_mems;
   rga_buffer_t rga_input_buffer;
   // shapes
   int model_width;
@@ -43,23 +42,23 @@ struct RknnEngine {
   float scale_img_to_model;
   float scale_model_to_img;
   // results
-  struct RknnMeta* rknn_meta;
+  struct RknnMeta *rknn_meta;
 };
-
-
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 int rknn_init_process(struct RknnEngine *rknn_process);
-int rknn_preprocess(struct RknnEngine* engine, GstBuffer* raw_buffer);
+int rknn_preprocess(struct RknnEngine *engine, GstBuffer *raw_buffer);
 int rknn_inference(struct RknnEngine *rknn_process);
 int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
                      float nms_threshold);
 void rknn_visualize(struct RknnEngine *rknn_process, GstBuffer *output_buffer);
 void rknn_dump_io(struct RknnEngine *rknn_process);
 void rknn_release(struct RknnEngine *rknn_process);
-
+void dump_tensor_data(const char *prefix, uint index,
+                      const rknn_tensor_attr *attr, const void *data,
+                      size_t size);
 #ifdef __cplusplus
 }
 #endif

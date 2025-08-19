@@ -123,12 +123,12 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
   return 0;
 }
 
-int rknn_preprocess(RknnEngine *engine, GstBuffer *raw_buffer) {
+int rknn_preprocess(RknnEngine *rknn_process, GstBuffer *raw_buffer) {
 
   GstBuffer *src_buf = raw_buffer;
 
   rga_buffer_t rga_src_buf;
-  rga_buffer_t rga_dst_buf = engine->rga_input_buffer;
+  rga_buffer_t rga_dst_buf = rknn_process->rga_input_buffer;
 
   GST_DEBUG("Converting buffer format using RGA");
 
@@ -136,18 +136,18 @@ int rknn_preprocess(RknnEngine *engine, GstBuffer *raw_buffer) {
   gst_buffer_to_rga_buffer(src_buf, &rga_src_buf);
 
   // Get dimensions from rga_buffer_t
-  int src_offset_x = engine->img_pad_left;
-  int src_offset_y = engine->img_pad_top;
-  int dst_offset_x = engine->model_pad_left;
-  int dst_offset_y = engine->model_pad_top;
+  int src_offset_x = rknn_process->img_pad_left;
+  int src_offset_y = rknn_process->img_pad_top;
+  int dst_offset_x = rknn_process->model_pad_left;
+  int dst_offset_y = rknn_process->model_pad_top;
   int src_width =
-      engine->img_width - engine->img_pad_left - engine->img_pad_right;
+      rknn_process->img_width - rknn_process->img_pad_left - rknn_process->img_pad_right;
   int src_height =
-      engine->img_height - engine->img_pad_top - engine->img_pad_bottom;
+      rknn_process->img_height - rknn_process->img_pad_top - rknn_process->img_pad_bottom;
   int dst_width =
-      engine->model_width - engine->model_pad_left - engine->model_pad_right;
+      rknn_process->model_width - rknn_process->model_pad_left - rknn_process->model_pad_right;
   int dst_height =
-      engine->model_height - engine->model_pad_top - engine->model_pad_bottom;
+      rknn_process->model_height - rknn_process->model_pad_top - rknn_process->model_pad_bottom;
   GST_DEBUG("Src: %dx%d Dst %dx%d ", src_width, src_height, dst_width,
             dst_height);
   im_rect src_rect = {src_offset_x, src_offset_y, src_width, src_height};
@@ -155,20 +155,75 @@ int rknn_preprocess(RknnEngine *engine, GstBuffer *raw_buffer) {
   GST_DEBUG("Src rect: %d,%d,%d,%d Dst rect: %d,%d,%d,%d", src_rect.x,
             src_rect.y, src_rect.width, src_rect.height, dst_rect.x, dst_rect.y,
             dst_rect.width, dst_rect.height);
-  int ret =
-      improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
+  int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
+  if (ret != IM_STATUS_SUCCESS) {
+    GST_ERROR("RGA process failed, ret = %d", ret);
+  }
 
+  
+  // dump_tensor_data("before_imquantize", 
+  //   0, 
+  //   &rknn_process->input_attrs[0], 
+  //   rknn_process->input_mems[0]->virt_addr,
+  // rknn_process->input_mems[0]->size);
+  // rknn_process->input_attrs[0].type = RKNN_TENSOR_UINT8;
+  // dump_tensor_data("before_imquantize", 
+  //   0, 
+  //   &rknn_process->input_attrs[0], 
+  //   rknn_process->input_mems[0]->virt_addr,
+  // rknn_process->input_mems[0]->size);
+  // rknn_process->input_attrs[0].type = RKNN_TENSOR_INT8;
+
+  // im_nn_t nn_info;
+  // nn_info.offset_b = 1;
+  // nn_info.offset_g = 1;
+  // nn_info.offset_r = 1;
+  // nn_info.scale_b = 1;
+  // nn_info.scale_g = 1;
+  // nn_info.scale_r = 1;
+  // ret = imquantize(rga_dst_buf, rga_dst_buf, nn_info);
+  // if (ret != IM_STATUS_SUCCESS) {
+  //   GST_ERROR("RGA quantize failed, ret = %d", ret);
+  // }
+
+  // Input is INT8, need UINT8->INT8 
+  //      UINT8  INT8    
+  // -128 0x00   0x80
+  // 0    0x80   0x00
+  int8_t* int8_ptr = (int8_t*)(rknn_process->input_mems[0]->virt_addr);
+  uint8_t* uint8_ptr = (uint8_t*)(rknn_process->input_mems[0]->virt_addr);
+  for (int i = 0; i < rknn_process->model_width * rknn_process->model_height * 3; i++) {
+    int8_ptr[i] = uint8_ptr[i] - 128;
+  }
   if (ret != IM_STATUS_SUCCESS) {
     GST_ERROR("RGA format conversion failed with error code: %d", ret);
     return -1;
   }
+
+  dump_tensor_data("after_imquantize", 
+    GST_BUFFER_OFFSET(raw_buffer), 
+    &rknn_process->input_attrs[0], 
+    rknn_process->input_mems[0]->virt_addr,
+  rknn_process->input_mems[0]->size);
+  rknn_process->input_attrs[0].type = RKNN_TENSOR_INT8;
 
   return TRUE;
 }
 
 int rknn_inference(struct RknnEngine *rknn_process) {
   int ret = 0;
+  ret = rknn_mem_sync(rknn_process->ctx, rknn_process->input_mems[0], RKNN_MEMORY_SYNC_TO_DEVICE);
+  if (ret) {
+    GST_ERROR("rknn_mem_sync input ret: %d", ret);
+  }
   ret = rknn_run(rknn_process->ctx, NULL);
+  for (size_t i = 0; i < rknn_process->io_num.n_output; i++) {
+    ret = rknn_mem_sync(rknn_process->ctx, rknn_process->output_mems[i], RKNN_MEMORY_SYNC_FROM_DEVICE);
+    if (ret) {
+      GST_ERROR("rknn_mem_sync output ret: %d", ret);
+
+    }
+  }
   return ret;
 }
 
@@ -390,7 +445,7 @@ static unsigned char *load_model(const char *filename, int *model_size) {
   return data;
 }
 
-static void dump_tensor_data(const char *prefix, uint index,
+void dump_tensor_data(const char *prefix, uint index,
                              const rknn_tensor_attr *attr, const void *data,
                              size_t size) {
   // 构造形状字符串
@@ -459,9 +514,12 @@ static void dump_tensor_data(const char *prefix, uint index,
     }
 
     cnpy::npy_save(filename, converted_data.data(), shape, "w");
-  } else {
+  } else if (attr->type == RKNN_TENSOR_UINT8 ) {
     // 直接保存其他类型的数据
-    cnpy::npy_save(filename, (char *)data, shape, "w");
+    cnpy::npy_save(filename, (uint8_t *)data, shape, "w");
+  } else if (attr->type == RKNN_TENSOR_INT8) {
+        cnpy::npy_save(filename, (int8_t *)data, shape, "w");
+
   }
 
   // 创建同名的 txt 文件，保存 zp 和 scale 信息

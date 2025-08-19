@@ -13,23 +13,23 @@ for i in {0..30}; do
 done
 
 echo "=== cmd ==="
-# CMD="gst-launch-1.0 -e \
-#     multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
-#     ! jpegparse \
-#     ! mppjpegdec dma-feature=true \
-#     ! videorate \
-#     ! video/x-raw, framerate=30/1 \
-#     ! rknn workers=1 \
-#         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
-#         draw_boxes=false \
-#         resize_mode=crop \
-#         mppjpegdec_offset_workaround=1 \
-#     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
-#     ! h264parse ! mp4mux ! filesink location=test.mp4"
+CMD="gst-launch-1.0 -e \
+    multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
+    ! jpegparse \
+    ! mppjpegdec dma-feature=true \
+    ! videorate \
+    ! video/x-raw, framerate=30/1 \
+    ! rknn workers=1 \
+        model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
+        draw_boxes=true \
+        resize_mode=crop \
+        mppjpegdec_offset_workaround=1 \
+    ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
+    ! h264parse ! mp4mux ! filesink location=test.mp4"
 
 # 
 # CMD="gst-launch-1.0 -e \
-#     v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true num-buffers=10000 \
+#     v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true num-buffers=3000 \
 #     ! videorate drop-only=true \
 #     ! video/x-raw,framerate=30/1 \
 #     ! rknn workers=3 \
@@ -41,18 +41,18 @@ echo "=== cmd ==="
 #     ! h264parse ! mp4mux faststart=true ! filesink location=test.mp4"
 
 # 使用 test2.mov 文件输入
-CMD="gst-launch-1.0 -e \
-    filesrc location=test2.mov \
-    ! parsebin \
-    ! mppvideodec \
-    ! videorate \
-    ! rknn workers=3 \
-        model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
-        draw_boxes=true \
-        resize_mode=crop \
-        mppjpegdec_offset_workaround=0 \
-    ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
-    ! h264parse ! mp4mux faststart=true ! filesink location=test.mp4"
+# CMD="gst-launch-1.0 -e \
+#     filesrc location=test2.mov \
+#     ! parsebin \
+#     ! mppvideodec \
+#     ! videorate \
+#     ! rknn workers=3 \
+#         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
+#         draw_boxes=true \
+#         resize_mode=crop \
+#         mppjpegdec_offset_workaround=0 \
+#     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
+#     ! h264parse ! mp4mux faststart=true ! filesink location=test.mp4"
 
 
 echo "$CMD"
