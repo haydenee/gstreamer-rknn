@@ -12,8 +12,7 @@ LOG_FILE="log"
 MP4_FILE="test.mp4"
 TEST_SCRIPT="./script/test.sh"
 TIMEOUT=5
-# TEST_SCRIPT="./script/test.sh"
-# TEST_SCRIPT="./build/test/yolo11pose_test"
+#TEST_SCRIPT="./build/test/rgatest"
 
 echo "=== 开始远程测试流程 ==="
 echo "远程主机: $REMOTE_HOST"

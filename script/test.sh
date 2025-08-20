@@ -99,7 +99,7 @@ export GST_MPP_NO_RGA=0
 
 # The log level is divided into full print (0), DEFAULT (1), DEBUG (3), INFO (4), WRANING (5), ERROR (6).
 export ROCKCHIP_RGA_LOG=0
-export ROCKCHIP_RGA_LOG_LEVEL=5
+export ROCKCHIP_RGA_LOG_LEVEL=1
 
 export mpp_log_level=7 # silence 
 echo "=== envs ==="

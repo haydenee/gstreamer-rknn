@@ -254,6 +254,7 @@ gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
   rknn_meta->start_time = gst_clock_get_time(filter->clock);
   struct RknnEngine *rknn_engine = filter->rknn_engines[filter->next_worker_id];
   while (g_async_queue_length(filter->workers_queue) > 3) {
+    GST_TRACE("Waiting for free workers");
     g_usleep(1000);
   }
   g_async_queue_push(filter->workers_queue, rknn_engine);
