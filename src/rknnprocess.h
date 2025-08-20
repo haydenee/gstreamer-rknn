@@ -21,6 +21,8 @@ struct RknnEngine {
   rknn_input_output_num io_num;
   rknn_tensor_attr *input_attrs;
   rknn_tensor_attr *output_attrs;
+  GstBuffer* input_buf;
+  GstBuffer* output_buf;
   rknn_tensor_mem **input_mems;
   rknn_tensor_mem **output_mems;
   rga_buffer_t rga_input_buffer;

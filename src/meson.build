@@ -1,4 +1,4 @@
-plugin_c_args = ['-DHAVE_CONFIG_H', '-march=native', '-mtune=native', '-O2']
+plugin_c_args = ['-DHAVE_CONFIG_H', '-O0', '-g']
 
 cdata = configuration_data()
 cdata.set_quoted('PACKAGE_VERSION', gst_version)

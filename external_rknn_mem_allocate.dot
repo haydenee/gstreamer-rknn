@@ -1,0 +1,49 @@
+digraph RKM_API_Flow {
+    // 全局配置：字体（适配中文）、布局方向（从上到下）
+    node [fontname="SimSun", fontsize=10];
+    rankdir=TB;
+
+    // 1. 节点定义（按原图元素类型区分）
+    // 开始/结束节点（椭圆）
+    start [shape=ellipse, label="start"];
+    end [shape=ellipse, label="end"];
+    
+    // 核心步骤（矩形）
+    rkm_init [shape=box, label="rkm_init", xlabel="rkm_context"];  // xlabel标注注释
+    rkm_query [shape=box, label="rkm_query", xlabel="rkm_tensor_attr(input/output)"];
+    rkm_set_to_mem [shape=box, label="rkm_set_to_mem", xlabel="input tensor physical address"];
+    preprocess_rga [shape=box, label="preprocess_rga"];
+    rkm_run [shape=box, label="rkm_run"];
+    postprocess_cpu [shape=box, label="postprocess_cpu"];
+    rkm_destroy [shape=box, label="rkm_destroy"];
+    
+    // 强调步骤（红色字体，对应原图红框）
+    rkm_create_mem_from_fd [shape=box, label="rkm_create_mem_from_fd", fontcolor=red, xlabel="rkm_tensor_mem(input/output)"];
+    rkm_create_mem_from_phys [shape=box, label="rkm_create_mem_from_phys", fontcolor=red, xlabel="rkm_tensor_mem(input/output)"];
+    flush_cache [shape=box, label="flush_cache(output buffer)", fontcolor=red];
+    rkm_destroy_mem [shape=box, label="rkm_destroy_mem", fontcolor=red];
+    
+    // 输入参数（波浪框，对应原图stream_fd）
+    stream_fd [shape=wave, label="stream_fd"];
+
+    // 2. 流程连接（严格对应原图箭头关系）
+    start -> rkm_init;                     // 开始 → 初始化
+    rkm_init -> rkm_query;                 // 初始化 → 查询
+    rkm_query -> rkm_create_mem_from_fd;   // 查询 → 从FD创建内存
+    rkm_query -> rkm_create_mem_from_phys; // 查询 → 从物理地址创建内存
+    rkm_create_mem_from_fd -> rkm_set_to_mem;  // 内存创建 → 绑定到设备
+    rkm_create_mem_from_phys -> rkm_set_to_mem;// 内存创建 → 绑定到设备
+    rkm_set_to_mem -> preprocess_rga;      // 绑定设备 → 预处理
+    stream_fd -> preprocess_rga;           // 输入参数 → 预处理
+    preprocess_rga -> rkm_run;             // 预处理 → 执行推理
+    rkm_run -> flush_cache;                // 推理 → 刷新缓存
+    flush_cache -> postprocess_cpu;        // 刷新缓存 → CPU后处理
+    postprocess_cpu -> rkm_set_to_mem [label="loop"];  // 后处理 → 循环回绑定设备（流程迭代）
+    postprocess_cpu -> rkm_destroy_mem;    // 后处理 → 销毁内存
+    rkm_destroy_mem -> rkm_destroy;        // 销毁内存 → 销毁资源
+    rkm_destroy -> end;                    // 销毁资源 → 结束
+
+    // 3. 布局优化（让节点排列更贴合原图）
+    { rank=same; rkm_create_mem_from_fd; rkm_create_mem_from_phys; } // 两个内存创建步骤水平对齐
+    { rank=same; stream_fd; preprocess_rga; }                       // 输入参数与预处理步骤水平对齐
+}

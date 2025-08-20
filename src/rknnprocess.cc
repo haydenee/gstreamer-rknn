@@ -1,5 +1,7 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <gst/allocators/gstdmabuf.h>
+#include <linux/dma-buf.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,15 +71,16 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
   rknn_process->output_mems = (rknn_tensor_mem **)malloc(
       sizeof(rknn_tensor_mem *) * rknn_process->io_num.n_output);
 
+  std::vector<size_t> input_sizes;
+  std::vector<size_t> output_sizes;
   for (uint i = 0; i < rknn_process->io_num.n_input; i++) {
     rknn_tensor_attr &attr = rknn_process->input_attrs[i];
     attr.index = i;
     rknn_query(rknn_process->ctx, RKNN_QUERY_NATIVE_INPUT_ATTR, &attr,
                sizeof(rknn_tensor_attr));
     dump_tensor_attr(&attr);
-    rknn_process->input_mems[i] =
-        rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
-    rknn_set_io_mem(rknn_process->ctx, rknn_process->input_mems[i], &attr);
+    
+    input_sizes.push_back(attr.size_with_stride);
   }
 
   for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
@@ -86,9 +89,29 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
     rknn_query(rknn_process->ctx, RKNN_QUERY_NATIVE_OUTPUT_ATTR, &attr,
                sizeof(rknn_tensor_attr));
     dump_tensor_attr(&attr);
-    rknn_process->output_mems[i] =
-        rknn_create_mem(rknn_process->ctx, attr.size_with_stride);
-    rknn_set_io_mem(rknn_process->ctx, rknn_process->output_mems[i], &attr);
+    output_sizes.push_back(attr.size_with_stride);
+  }
+
+  rknn_process->input_buf = dma_buffer_new(input_sizes.size(), &input_sizes[0]);
+  rknn_process->output_buf = dma_buffer_new(output_sizes.size(), &output_sizes[0]);
+
+  for (size_t i = 0; i < rknn_process->io_num.n_input; i++) {
+    GstMemory* mem = gst_buffer_peek_memory(rknn_process->input_buf, i);
+    GstMapInfo map_info;
+    gst_memory_map(mem, &map_info, GST_MAP_READ);
+    int fd = gst_dmabuf_memory_get_fd(mem);
+    rknn_process->input_mems[i] = rknn_create_mem_from_fd(rknn_process->ctx, fd, map_info.data, mem->size, mem->offset);
+    rknn_set_io_mem(rknn_process->ctx, rknn_process->input_mems[i], &rknn_process->input_attrs[i]);
+  }
+
+  for (size_t i = 0; i < rknn_process->io_num.n_output; i++) {
+    GstMemory* mem = gst_buffer_peek_memory(rknn_process->output_buf, i);
+    GstMapInfo map_info;
+    gst_memory_map(mem, &map_info, GST_MAP_READ);
+    int fd = gst_dmabuf_memory_get_fd(mem);
+    rknn_process->output_mems[i] = rknn_create_mem_from_fd(rknn_process->ctx, fd, map_info.data, mem->size, mem->offset);
+    gst_memory_unmap(mem, &map_info);
+    rknn_set_io_mem(rknn_process->ctx, rknn_process->output_mems[i], &rknn_process->output_attrs[i]);
   }
 
   int channel = 3;
@@ -126,7 +149,6 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
 int rknn_preprocess(RknnEngine *rknn_process, GstBuffer *raw_buffer) {
 
   GstBuffer *src_buf = raw_buffer;
-
   rga_buffer_t rga_src_buf;
   rga_buffer_t rga_dst_buf = rknn_process->rga_input_buffer;
 
@@ -155,75 +177,55 @@ int rknn_preprocess(RknnEngine *rknn_process, GstBuffer *raw_buffer) {
   GST_DEBUG("Src rect: %d,%d,%d,%d Dst rect: %d,%d,%d,%d", src_rect.x,
             src_rect.y, src_rect.width, src_rect.height, dst_rect.x, dst_rect.y,
             dst_rect.width, dst_rect.height);
+
   int ret = improcess(rga_src_buf, rga_dst_buf, {}, src_rect, dst_rect, {}, IM_SYNC);
   if (ret != IM_STATUS_SUCCESS) {
     GST_ERROR("RGA process failed, ret = %d", ret);
   }
 
-  
-  // dump_tensor_data("before_imquantize", 
-  //   0, 
-  //   &rknn_process->input_attrs[0], 
+  // dump_tensor_data("before_imquantize",
+  //   0,
+  //   &rknn_process->input_attrs[0],
   //   rknn_process->input_mems[0]->virt_addr,
   // rknn_process->input_mems[0]->size);
   // rknn_process->input_attrs[0].type = RKNN_TENSOR_UINT8;
-  // dump_tensor_data("before_imquantize", 
-  //   0, 
-  //   &rknn_process->input_attrs[0], 
-  //   rknn_process->input_mems[0]->virt_addr,
-  // rknn_process->input_mems[0]->size);
-  // rknn_process->input_attrs[0].type = RKNN_TENSOR_INT8;
+  
+  // GST_DEBUG("Creating int8_ptr and uint8_ptr...");
+  // 注释掉有问题的原地数据类型转换代码
+  // int8_t* int8_ptr = (int8_t*)(rknn_process->input_mems[0]->virt_addr);
+  // uint8_t* uint8_ptr = (uint8_t*)(rknn_process->input_mems[0]->virt_addr);
 
-  // im_nn_t nn_info;
-  // nn_info.offset_b = 1;
-  // nn_info.offset_g = 1;
-  // nn_info.offset_r = 1;
-  // nn_info.scale_b = 1;
-  // nn_info.scale_g = 1;
-  // nn_info.scale_r = 1;
-  // ret = imquantize(rga_dst_buf, rga_dst_buf, nn_info);
-  // if (ret != IM_STATUS_SUCCESS) {
-  //   GST_ERROR("RGA quantize failed, ret = %d", ret);
+  // for (int i = 0; i < rknn_process->input_mems[0]->size; i++) {
+  //   int8_ptr[i] = uint8_ptr[i] - 128;
   // }
 
-  // Input is INT8, need UINT8->INT8 
-  //      UINT8  INT8    
-  // -128 0x00   0x80
-  // 0    0x80   0x00
-  int8_t* int8_ptr = (int8_t*)(rknn_process->input_mems[0]->virt_addr);
-  uint8_t* uint8_ptr = (uint8_t*)(rknn_process->input_mems[0]->virt_addr);
-  for (int i = 0; i < rknn_process->model_width * rknn_process->model_height * 3; i++) {
-    int8_ptr[i] = uint8_ptr[i] - 128;
-  }
-  if (ret != IM_STATUS_SUCCESS) {
-    GST_ERROR("RGA format conversion failed with error code: %d", ret);
-    return -1;
-  }
+  // dump_tensor_data("after_imquantize",
+  //   GST_BUFFER_OFFSET(raw_buffer),
+  //   &rknn_process->input_attrs[0],
+  //   map_info.data,
+  // map_info.size);
+  // rknn_process->input_attrs[0].type = RKNN_TENSOR_INT8;
 
-  dump_tensor_data("after_imquantize", 
-    GST_BUFFER_OFFSET(raw_buffer), 
-    &rknn_process->input_attrs[0], 
-    rknn_process->input_mems[0]->virt_addr,
-  rknn_process->input_mems[0]->size);
-  rknn_process->input_attrs[0].type = RKNN_TENSOR_INT8;
-
+  // gst_buffer_unmap(rknn_process->input_buf, &map_info);
+  
   return TRUE;
 }
 
 int rknn_inference(struct RknnEngine *rknn_process) {
   int ret = 0;
-  ret = rknn_mem_sync(rknn_process->ctx, rknn_process->input_mems[0], RKNN_MEMORY_SYNC_TO_DEVICE);
-  if (ret) {
-    GST_ERROR("rknn_mem_sync input ret: %d", ret);
-  }
-  ret = rknn_run(rknn_process->ctx, NULL);
-  for (size_t i = 0; i < rknn_process->io_num.n_output; i++) {
-    ret = rknn_mem_sync(rknn_process->ctx, rknn_process->output_mems[i], RKNN_MEMORY_SYNC_FROM_DEVICE);
-    if (ret) {
-      GST_ERROR("rknn_mem_sync output ret: %d", ret);
+  // ret = rknn_mem_sync(rknn_process->ctx, rknn_process->input_mems[0], RKNN_MEMORY_SYNC_TO_DEVICE);
+  // if (ret) {
+  //   GST_ERROR("rknn_mem_sync input ret: %d", ret);
+  // }
 
-    }
-  }
+  ret = rknn_run(rknn_process->ctx, NULL);
+  // for (size_t i = 0; i < rknn_process->io_num.n_output; i++) {
+  //   ret = rknn_mem_sync(rknn_process->ctx, rknn_process->output_mems[i], RKNN_MEMORY_SYNC_FROM_DEVICE);
+  //   if (ret) {
+  //     GST_ERROR("rknn_mem_sync output ret: %d", ret);
+
+  //   }
+  // }
   return ret;
 }
 
@@ -448,6 +450,20 @@ static unsigned char *load_model(const char *filename, int *model_size) {
 void dump_tensor_data(const char *prefix, uint index,
                              const rknn_tensor_attr *attr, const void *data,
                              size_t size) {
+  // 添加调试日志验证参数有效性
+  GST_DEBUG("dump_tensor_data called: prefix=%s, index=%u, data=%p, size=%zu",
+            prefix, index, data, size);
+  
+  if (data == NULL) {
+    GST_ERROR("dump_tensor_data: data pointer is NULL!");
+    return;
+  }
+  
+  if (attr == NULL) {
+    GST_ERROR("dump_tensor_data: attr pointer is NULL!");
+    return;
+  }
+
   // 构造形状字符串
   std::string shape_str = "";
   for (uint j = 0; j < attr->n_dims; j++) {
@@ -498,6 +514,18 @@ void dump_tensor_data(const char *prefix, uint index,
   std::vector<size_t> shape;
   for (uint j = 0; j < attr->n_dims; j++) {
     shape.push_back(attr->dims[j]);
+  }
+
+  // 检查目录是否存在，如果不存在则创建
+  if (system("mkdir -p ./dumps") != 0) {
+    GST_ERROR("Failed to create dumps directory!");
+    return;
+  }
+
+  // 检查目录是否存在，如果不存在则创建
+  if (system("mkdir -p ./dumps") != 0) {
+    GST_ERROR("Failed to create dumps directory!");
+    return;
   }
 
   // 保存数据到 npy 文件

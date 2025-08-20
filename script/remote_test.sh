@@ -6,12 +6,12 @@
 set -e
 
 # 配置参数
-REMOTE_HOST="root@opi-003"
+REMOTE_HOST="root@10.0.1.177"
 REMOTE_DIR="/root/gstreamer-rknn"
 LOG_FILE="log"
 MP4_FILE="test.mp4"
 TEST_SCRIPT="./script/test.sh"
-TIMEOUT=30
+TIMEOUT=5
 # TEST_SCRIPT="./script/test.sh"
 # TEST_SCRIPT="./build/test/yolo11pose_test"
 
