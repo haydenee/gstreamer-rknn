@@ -168,35 +168,12 @@ void post_process_i8(float conf_threshold, float nms_threshold, ResultData *data
       GridPos pos = grid_pos_from_index(index, data);
       for (int j = 0; j < 17; j++) {
 
-        int j1 = j / 16;
-        int j2 = j % 16;
-        // kpts.data: NC1HWC2, 1 x 2 x 2 x count x 16
-        // kpts_conf.data: NC1HWC2, 1 x 2 x 1 x count x 16
+        // kpts.data: NCHW 1 x 17 x 2 x count
+        // kpts_conf.data: NCHW 1 x 17 x 1 x count
 
-        // x_idx = kpts.data[0][j1][0][index][j2]
-        // y_idx = kpts.data[0][j1][1][index][j2]
-        // conf_idx = kpts_confs.data[0][j1][0][index][j2]
-        
-        
-
-        int x_idx = 0 * (2 * 2 * data->count * 16) +    // N=0
-                    j1 * (2 * data->count * 16) +       // C1=j1
-                    0 * (data->count * 16) +            // H=0 (x坐标)
-                    index * 16 +                        // W=index
-                    j2;                                 // C2=j2
-
-        int y_idx = 0 * (2 * 2 * data->count * 16) +    // N=0
-                    j1 * (2 * data->count * 16) +       // C1=j1
-                    1 * (data->count * 16) +            // H=1 (y坐标)
-                    index * 16 +                        // W=index
-                    j2;                                 // C2=j2
-    
-        int conf_idx = 0 * (2 * 1 * data->count * 16) + // N=0
-                    j1 * (2 * 1 * data->count * 16) +   // C1=j1
-                    0 * (data->count * 16) +            // H=0
-                    index * 16 +                        // W=data->count
-                    j2;                                 // C2=j2
-
+        int x_idx = j * 2 * data->count + index;
+        int y_idx = j * 2 * data->count + data->count + index;
+        int conf_idx = j * data->count + index;
 
         GST_TRACE("x_idx %d, y_idx %d, conf_idx %d", x_idx, y_idx, conf_idx);
         float x = dequantize_affine_i8_to_f32(data->kpts.data[x_idx],

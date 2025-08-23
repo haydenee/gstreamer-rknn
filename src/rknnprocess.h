@@ -22,7 +22,8 @@ struct RknnEngine {
   rknn_tensor_attr output_attrs[4];
   rknn_tensor_mem *input_mem;
   rknn_tensor_mem *output_mem; 
-  rknn_tensor_mem *output_mems[4];
+  rknn_input input;
+  rknn_output outputs[4];
   rga_buffer_t rga_input_buffer;
   // shapes
   int model_width;

@@ -254,7 +254,7 @@ gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
   rknn_meta->start_time = gst_clock_get_time(filter->clock);
   struct RknnEngine *rknn_engine = filter->rknn_engines[filter->next_worker_id];
   while (g_async_queue_length(filter->workers_queue) > 3) {
-    GST_TRACE("Waiting for free workers");
+    // GST_TRACE("Waiting for free workers");
     g_usleep(1000);
   }
   g_async_queue_push(filter->workers_queue, rknn_engine);
@@ -306,6 +306,8 @@ static gpointer work_thread(gpointer data) {
               img_buffer->offset);
     rknn_preprocess(rknn_engine, img_buffer);
     rknn_meta->preprocess_done = gst_clock_get_time(filter->clock);
+  //   dump_tensor_data("preprocess", GST_BUFFER_OFFSET(img_buffer), &rknn_engine->input_attr, 
+  // rknn_engine->input_mem->priv_data, rknn_engine->input_attr.size_with_stride);
     rknn_inference(rknn_engine);
     rknn_meta->infer_done = gst_clock_get_time(filter->clock);
     rknn_postprocess(rknn_engine, 0.6, 0.45);

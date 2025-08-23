@@ -52,11 +52,10 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
   auto &attr = rknn_process->input_attr;
   auto &ctx = rknn_process->ctx;
   attr.index = 0;
-  rknn_query(ctx, RKNN_QUERY_NATIVE_INPUT_ATTR, &attr,
+  rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr,
              sizeof(rknn_tensor_attr));
   dump_tensor_attr(&attr);
-  rknn_process->input_mem = rknn_create_mem2(ctx, attr.size_with_stride, RKNN_FLAG_MEMORY_NON_CACHEABLE);
-  rknn_set_io_mem(ctx, rknn_process->input_mem, &attr);
+  rknn_process->input_mem = rknn_create_mem(ctx, attr.size_with_stride);
 
   // 初始化 librga 的输出位置
   int channel = 3;
@@ -84,12 +83,19 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
   rknn_process->rga_input_buffer =
       wrapbuffer_handle(handle, width, height, RK_FORMAT_RGB_888);
 
+  rknn_process->input.size = attr.size_with_stride;
+  rknn_process->input.buf = rknn_process->input_mem->virt_addr;
+  rknn_process->input.fmt = RKNN_TENSOR_NHWC;
+  rknn_process->input.type = RKNN_TENSOR_UINT8;
+  rknn_process->input.index = 0;
+  rknn_process->input.pass_through = 0;
+
   // 初始化输出空间
   size_t output_total_size = 0;
   for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
     auto &attr = rknn_process->output_attrs[i];
     attr.index = i;
-    rknn_query(ctx, RKNN_QUERY_NATIVE_OUTPUT_ATTR, &attr,
+    rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &attr,
                sizeof(rknn_tensor_attr));
     dump_tensor_attr(&attr);
     output_total_size += attr.size_with_stride;
@@ -102,12 +108,12 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
   size_t offset = 0;
   for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
     auto &attr = rknn_process->output_attrs[i];
-    rknn_process->output_mems[i] = rknn_create_mem_from_fd(
-        ctx, rknn_process->output_mem->fd, rknn_process->output_mem->virt_addr,
-        attr.size_with_stride, offset);
-    rknn_set_io_mem(ctx, rknn_process->output_mems[i], &attr);
-    GST_DEBUG("output[%d] size: %d, offset: %zu", i, attr.size_with_stride,
-              offset);
+    rknn_process->outputs[i].buf =
+        (uint8_t *)rknn_process->output_mem->virt_addr + offset;
+    rknn_process->outputs[i].size = attr.size_with_stride;
+    rknn_process->outputs[i].index = i;
+    rknn_process->outputs[i].is_prealloc = TRUE;
+    rknn_process->outputs[i].want_float = FALSE;
     offset += attr.size_with_stride;
   }
 
@@ -160,71 +166,36 @@ int rknn_preprocess(RknnEngine *rknn_process, GstBuffer *raw_buffer) {
     return false;
   }
 
-  // dump_tensor_data("before_imquantize",
-  //   0,
-  //   &rknn_process->input_attrs[0],
-  //   rknn_process->input_mems[0]->virt_addr,
-  // rknn_process->input_mems[0]->size);
-  // rknn_process->input_attrs[0].type = RKNN_TENSOR_UINT8;
-
-  // GST_DEBUG("Creating int8_ptr and uint8_ptr...");
-  // 注释掉有问题的原地数据类型转换代码
-  // int8_t* int8_ptr = (int8_t*)(rknn_process->input_mems[0]->virt_addr);
-  // uint8_t* uint8_ptr = (uint8_t*)(rknn_process->input_mems[0]->virt_addr);
-
-  // for (int i = 0; i < rknn_process->input_mems[0]->size; i++) {
-  //   int8_ptr[i] = uint8_ptr[i] - 128;
-  // }
-
-  // dump_tensor_data("after_imquantize",
-  //   GST_BUFFER_OFFSET(raw_buffer),
-  //   &rknn_process->input_attrs[0],
-  //   map_info.data,
-  // map_info.size);
-  // rknn_process->input_attrs[0].type = RKNN_TENSOR_INT8;
-
-  // gst_buffer_unmap(rknn_process->input_buf, &map_info);
-
   return true;
 }
 
 int rknn_inference(struct RknnEngine *rknn_process) {
-  int ret = 0;
-  // ret = rknn_mem_sync(rknn_process->ctx, rknn_process->input_mem,
-  //                     RKNN_MEMORY_SYNC_TO_DEVICE);
-  if (ret) {
-    GST_ERROR("rknn_mem_sync input ret: %d", ret);
-  }
   GST_TRACE("Before inference");
-  ret = rknn_run(rknn_process->ctx, NULL);
-  // ret = rknn_mem_sync(rknn_process->ctx, rknn_process->output_mem,
-  //                     RKNN_MEMORY_SYNC_FROM_DEVICE);
-  if (ret != RKNN_SUCC) {
-    GST_ERROR("rknn_run ret: %d", ret);
-  }
+  int ret = 0;
+  ret |= rknn_inputs_set(rknn_process->ctx, rknn_process->io_num.n_input,
+                  &rknn_process->input);
+  ret |= rknn_run(rknn_process->ctx, NULL);
+  ret |= rknn_outputs_get(rknn_process->ctx, rknn_process->io_num.n_output,
+                   rknn_process->outputs, NULL);
   return ret;
 }
 
 int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
                      float nms_threshold) {
   ResultData data;
-  data.boxes_confs.data = (int8_t *)rknn_process->output_mems[0]->virt_addr +
-                          rknn_process->output_mems[0]->offset;
+  data.boxes_confs.data = (int8_t *)rknn_process->outputs[0].buf;
   data.boxes_confs.zp = rknn_process->output_attrs[0].zp;
   data.boxes_confs.scale = rknn_process->output_attrs[0].scale;
 
-  data.boxes.data = (int8_t *)rknn_process->output_mems[1]->virt_addr +
-                    rknn_process->output_mems[1]->offset;
+  data.boxes.data = (int8_t *)rknn_process->outputs[1].buf;
   data.boxes.zp = rknn_process->output_attrs[1].zp;
   data.boxes.scale = rknn_process->output_attrs[1].scale;
 
-  data.kpts_confs.data = (int8_t *)rknn_process->output_mems[2]->virt_addr +
-                         rknn_process->output_mems[2]->offset;
+  data.kpts_confs.data = (int8_t *)rknn_process->outputs[2].buf;
   data.kpts_confs.zp = rknn_process->output_attrs[2].zp;
   data.kpts_confs.scale = rknn_process->output_attrs[2].scale;
 
-  data.kpts.data = (int8_t *)rknn_process->output_mems[3]->virt_addr +
-                   rknn_process->output_mems[3]->offset;
+  data.kpts.data = (int8_t *)rknn_process->outputs[3].buf;
   data.kpts.zp = rknn_process->output_attrs[3].zp;
   data.kpts.scale = rknn_process->output_attrs[3].scale;
 
@@ -235,7 +206,7 @@ int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
   post_process_i8(box_conf_threshold, nms_threshold, &data);
 
   auto &r = rknn_process->rknn_meta->results;
-  ;
+
   auto rknn_meta = rknn_process->rknn_meta;
   rknn_meta->results_size = data.results.size();
   float scale = rknn_process->scale_model_to_img;
@@ -501,7 +472,7 @@ void rknn_dump_io(struct RknnEngine *rknn_process) {
   // Dump 输出张量
   for (uint i = 0; i < rknn_process->io_num.n_output; i++) {
     const rknn_tensor_attr attr = rknn_process->output_attrs[i];
-    const rknn_tensor_mem *mem = rknn_process->output_mems[i];
-    dump_tensor_data("output", i, &attr, mem->virt_addr, mem->size);
+    const rknn_output output = rknn_process->outputs[i];
+    dump_tensor_data("output", i, &attr, output.buf, output.size);
   }
 }
