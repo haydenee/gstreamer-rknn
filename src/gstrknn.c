@@ -104,7 +104,7 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
   g_object_class_install_property(
       gobject_class, PROP_SOCKET_CONFIG_PATH,
       g_param_spec_string("socket-config-path", "Socket Config Path",
-                          "Path to the socket configuration file", NULL,
+                          "Path to the socket configuration file", "./socket_config.json",
                           G_PARAM_READWRITE));
 
   g_object_class_install_property(
@@ -156,7 +156,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->sinkpad = NULL;
   filter->srcpad = NULL;
   filter->model_path = NULL;
-  filter->socket_config_path = NULL;
+  filter->socket_config_path = g_strdup("./socket_config.json");
   filter->sink_caps = NULL;
   filter->src_caps = NULL;
   filter->rknn_engines = NULL;
