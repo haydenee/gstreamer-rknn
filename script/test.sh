@@ -87,7 +87,7 @@ echo "$CMD"
 # |   |         | may include dumping the content of blocks of memory.           |
 # +------------------------------------------------------------------------------+
 #export GST_DEBUG=*:1,rknn:7,mpp:7,mppdec:7,mpph264dec:7:exif-tags:1
-export GST_DEBUG=*:1,rknn:7
+export GST_DEBUG=*:1,rknn:4
 
 export GST_MPP_NO_RGA=0
 

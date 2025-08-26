@@ -32,7 +32,6 @@ static gpointer work_thread(gpointer data);
 GST_DEBUG_CATEGORY(gst_plugin_rknn_debug);
 #define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
-
 /* 初始化 RKNN 推理引擎，并获得 RKNN 输入所需的长宽 */
 static gboolean init_rknn_engines(GstPluginRknn *filter) {
   // 为 RKNN 引擎数组分配内存
@@ -54,7 +53,7 @@ static gboolean init_rknn_engines(GstPluginRknn *filter) {
     // 第一次调用时，第一个引擎的上下文为0，会初始化新上下文
     // 后续调用时，第一个引擎的上下文已初始化，会复用上下文
     rknn_process->worker_id = i;
-    
+
     rknn_process->worker_0_ctx = &filter->rknn_engines[0]->ctx;
     rknn_init_process(rknn_process);
 
@@ -176,8 +175,7 @@ static gboolean allocate_rknn_resources(GstPluginRknn *filter) {
 
   // 创建 output_collector_thread 线程
   GST_INFO("Creating output collector thread");
-  filter->push_thread =
-      g_thread_new("output-collector", push_thread, filter);
+  filter->push_thread = g_thread_new("output-collector", push_thread, filter);
 
   GST_DEBUG("allocate_state_resources end");
   return TRUE;
@@ -215,7 +213,7 @@ static void release_rknn_resources(GstPluginRknn *filter) {
   GST_DEBUG("Pushed worker_id -1 to workers queue");
   g_thread_join(filter->push_thread);
   GST_INFO("Push thread stopped and cleaned up");
-  
+
   /* Free allocated resources */
   if (filter->model_path) {
     g_free(filter->model_path);
@@ -255,7 +253,7 @@ static void release_rknn_resources(GstPluginRknn *filter) {
 gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
 
   gst_buffer_add_meta(raw_buffer, GST_RKNN_META_INFO, NULL);
-  struct RknnMeta* rknn_meta = &gst_buffer_get_rknn_meta(raw_buffer)->rknn_meta;
+  struct RknnMeta *rknn_meta = &gst_buffer_get_rknn_meta(raw_buffer)->rknn_meta;
   rknn_meta->start_time = gst_clock_get_time(filter->clock);
   struct RknnEngine *rknn_engine = filter->rknn_engines[filter->next_worker_id];
   while (g_async_queue_length(filter->workers_queue) > 3) {
@@ -274,8 +272,8 @@ gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
   return TRUE;
 }
 static gpointer work_thread(gpointer data) {
-  struct RknnEngine* rknn_engine = (struct RknnEngine*) data;
-  GstPluginRknn* filter = GST_PLUGIN_RKNN(rknn_engine->filter);
+  struct RknnEngine *rknn_engine = (struct RknnEngine *)data;
+  GstPluginRknn *filter = GST_PLUGIN_RKNN(rknn_engine->filter);
   gint worker_id = rknn_engine->worker_id;
 
   // 绑定 CPU 和 NPU 核心
@@ -303,7 +301,8 @@ static gpointer work_thread(gpointer data) {
       return NULL;
     }
 
-    struct RknnMeta* rknn_meta = &gst_buffer_get_rknn_meta(img_buffer)->rknn_meta;
+    struct RknnMeta *rknn_meta =
+        &gst_buffer_get_rknn_meta(img_buffer)->rknn_meta;
     rknn_engine->rknn_meta = rknn_meta;
     rknn_meta->queue_done = gst_clock_get_time(filter->clock);
 
@@ -311,8 +310,10 @@ static gpointer work_thread(gpointer data) {
               img_buffer->offset);
     rknn_preprocess(rknn_engine, img_buffer);
     rknn_meta->preprocess_done = gst_clock_get_time(filter->clock);
-  //   dump_tensor_data("preprocess", GST_BUFFER_OFFSET(img_buffer), &rknn_engine->input_attr, 
-  // rknn_engine->input_mem->priv_data, rknn_engine->input_attr.size_with_stride);
+    //   dump_tensor_data("preprocess", GST_BUFFER_OFFSET(img_buffer),
+    //   &rknn_engine->input_attr,
+    // rknn_engine->input_mem->priv_data,
+    // rknn_engine->input_attr.size_with_stride);
     rknn_inference(rknn_engine);
     rknn_meta->infer_done = gst_clock_get_time(filter->clock);
     rknn_postprocess(rknn_engine, 0.6, 0.45);
@@ -330,7 +331,8 @@ static gpointer work_thread(gpointer data) {
         (rknn_meta->preprocess_done - rknn_meta->queue_done) / GST_USECOND,
         (rknn_meta->infer_done - rknn_meta->preprocess_done) / GST_USECOND,
         (rknn_meta->postprocess_done - rknn_meta->infer_done) / GST_USECOND,
-        (rknn_meta->visualize_done - rknn_meta->postprocess_done) / GST_USECOND);
+        (rknn_meta->visualize_done - rknn_meta->postprocess_done) /
+            GST_USECOND);
   }
 }
 
@@ -338,14 +340,14 @@ static gpointer push_thread(gpointer data) {
   GstPluginRknn *filter = GST_PLUGIN_RKNN(data);
   GST_DEBUG("Push thread start");
   while (TRUE) {
-    struct RknnEngine* worker = g_async_queue_pop(filter->workers_queue);
+    struct RknnEngine *worker = g_async_queue_pop(filter->workers_queue);
     GST_DEBUG("Push thread worker id %d", worker->worker_id);
     if (worker->worker_id == -1) {
       break;
     }
-    GstBuffer* buf = g_async_queue_pop(worker->rknn_output_queue);
-    
-    struct RknnMeta* meta = &gst_buffer_get_rknn_meta(buf)->rknn_meta;
+    GstBuffer *buf = g_async_queue_pop(worker->rknn_output_queue);
+
+    struct RknnMeta *meta = &gst_buffer_get_rknn_meta(buf)->rknn_meta;
     meta->push_pad_done = gst_clock_get_time(filter->clock);
     GST_DEBUG("Push thread pushed offset %lu", GST_BUFFER_OFFSET(buf));
     gst_pad_push(filter->srcpad, buf);
@@ -355,7 +357,9 @@ static gpointer push_thread(gpointer data) {
   return NULL;
 }
 
-// 以下是 GStreamer Plugin的模板框架，没有实质逻辑
+// 以下是 GStreamer
+// Plugin的模板框架，只有属性setter/getter，初始化结构/函数指针/caps
+// 等内容。没有实质逻辑
 
 enum {
   PROP_0,
@@ -472,15 +476,7 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
 
   GST_DEBUG("Pad templates added");
   GST_DEBUG("Exiting gst_plugin_rknn_class_init");
-
-  // Test current dmabuf buffer pool
 }
-
-/* initialize the new element
- * instantiate pads and add them to element
- * set pad callback functions
- * initialize instance structure
- */
 
 static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   GST_DEBUG("Initializing GstPluginRknn element");
@@ -500,62 +496,27 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->model_width = 0;
   filter->model_height = 0;
   filter->clock = gst_system_clock_obtain();
-  // 初始化输入格式信息
   filter->sink_format = GST_VIDEO_FORMAT_UNKNOWN;
   filter->img_width = 0;
   filter->img_height = 0;
+  filter->workers_queue = g_async_queue_new();
+  filter->next_worker_id = 0;
 
-  GST_DEBUG("Pointers initialized to NULL");
-
-  // Create sink pad
   filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
   GST_DEBUG("Sink pad creation attempted, result: %p", filter->sinkpad);
-
-  if (!filter->sinkpad) {
-    GST_ERROR("Failed to create sink pad");
-    return;
-  }
-
   gst_pad_set_event_function(filter->sinkpad,
                              GST_DEBUG_FUNCPTR(gst_plugin_rknn_sink_event));
   GST_DEBUG("Sink pad event function set");
   gst_pad_set_chain_function(filter->sinkpad,
                              GST_DEBUG_FUNCPTR(gst_plugin_rknn_chain));
   GST_DEBUG("Sink pad chain function set");
-
-  if (!gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad)) {
-    GST_ERROR("Failed to add sink pad to element");
-    gst_object_unref(filter->sinkpad);
-    filter->sinkpad = NULL;
-    return;
-  }
-
+  gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad);
   GST_DEBUG("Sink pad added to element");
-
-  // Create source pad
   filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
   GST_DEBUG("Source pad creation attempted, result: %p", filter->srcpad);
-
-  if (!filter->srcpad) {
-    GST_ERROR("Failed to create src pad");
-    return;
-  }
-  
-
-  if (!gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad)) {
-    GST_ERROR("Failed to add src pad to element");
-    gst_object_unref(filter->srcpad);
-    filter->srcpad = NULL;
-    return;
-  }
-
+  gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
   GST_DEBUG("Source pad added to element");
-
-  // Initialize queues
-  filter->workers_queue = g_async_queue_new();
-  filter->next_worker_id = 0;
-
-  GST_DEBUG("GstPluginRknn element initialized successfully");
+  GST_INFO("GstPluginRknn element initialized.");
 }
 
 static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
@@ -622,7 +583,8 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
     g_value_set_string(value, filter->model_path);
     break;
   case PROP_SOCKET_CONFIG_PATH:
-    GST_DEBUG("Getting socket_config_path property: %s", filter->socket_config_path);
+    GST_DEBUG("Getting socket_config_path property: %s",
+              filter->socket_config_path);
     g_value_set_string(value, filter->socket_config_path);
     break;
   case PROP_WORKERS:
@@ -687,14 +649,9 @@ static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
     const gchar *format_str = gst_structure_get_string(structure, "format");
     gst_structure_get_int(structure, "width", &filter->img_width);
     gst_structure_get_int(structure, "height", &filter->img_height);
-    // NV16/NV12 转 RGB 需要宽度 16 对齐，高度 2 对齐
     filter->sink_format = gst_video_format_from_string(format_str);
-    // 目前的实现不需要更改 caps 了。
     gst_pad_set_caps(filter->srcpad, filter->sink_caps);
-
-    // caps 协商完成后可以分配资源了。
     ret = allocate_rknn_resources(filter);
-    /* and forward */
     ret &= gst_pad_event_default(pad, parent, event);
     break;
   }
@@ -709,10 +666,6 @@ static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
   }
   return ret;
 }
-
-/* chain function
- * this function does the actual processing
- */
 static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
                                            GstBuffer *buf) {
   GstPluginRknn *filter;
@@ -747,42 +700,18 @@ static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
   return GST_FLOW_OK;
 }
 
-/* entry point to initialize the plug-in
- * initialize the plug-in itself
- * register the element factories and other features
- */
 static gboolean plugin_init(GstPlugin *plugin) {
-
-  /* debug category for filtering log messages
-   *
-   * exchange the string 'Template plugin' with your description
-   */
-
   GST_DEBUG_CATEGORY_INIT(gst_plugin_rknn_debug, "rknn", 0, "RKNN plugin");
-
   GST_DEBUG("Plugin debug category initialized");
-
   gboolean result = GST_ELEMENT_REGISTER(plugin_rknn, plugin);
-
   GST_DEBUG("Plugin registration result: %d", result);
-
   return result;
 }
 
-/* PACKAGE: this is usually set by meson depending on some _INIT macro
- * in meson.build and then written into and defined in config.h, but we can
- * just set it ourselves here in case someone doesn't use meson to
- * compile this code. GST_PLUGIN_DEFINE needs PACKAGE to be defined.
- */
 #ifndef PACKAGE
 #define PACKAGE "gst-plugin-rknn"
 #endif
 
-/* gstreamer looks for this structure to register plugins
- *
- * exchange the string 'Template plugin' with your plugin description
- */
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, rknn, "rknn",
                   plugin_init, PACKAGE_VERSION, GST_LICENSE, GST_PACKAGE_NAME,
                   GST_PACKAGE_ORIGIN)
-
