@@ -22,6 +22,7 @@
 #include "rknn_meta.h"
 #include "rknnprocess.h"
 #include "gstrknn_impl.h"
+#include "socket_utils.h"
 
 #include <sys/time.h>
 
@@ -271,7 +272,7 @@ gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
 
   return TRUE;
 }
-static gpointer work_thread(gpointer data) {
+gpointer work_thread(gpointer data) {
   struct RknnEngine *rknn_engine = (struct RknnEngine *)data;
   GstPluginRknn *filter = GST_PLUGIN_RKNN(rknn_engine->filter);
   gint worker_id = rknn_engine->worker_id;
@@ -336,7 +337,7 @@ static gpointer work_thread(gpointer data) {
   }
 }
 
-static gpointer push_thread(gpointer data) {
+gpointer push_thread(gpointer data) {
   GstPluginRknn *filter = GST_PLUGIN_RKNN(data);
   GST_DEBUG("Push thread start");
   while (TRUE) {
@@ -356,3 +357,4 @@ static gpointer push_thread(gpointer data) {
 
   return NULL;
 }
+

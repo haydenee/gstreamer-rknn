@@ -1,7 +1,7 @@
 {
     "clients": ["opi-003"],
     "primary": {
-        "host": "opi-003",
+        "hostname": "opi-003",
         "port": 30033
     },
     "server": {
