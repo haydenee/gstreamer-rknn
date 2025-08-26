@@ -119,8 +119,6 @@ struct _GstPluginRknn {
 
 };
 
-// 前向声明
-void destroy_rknn_engines(GstPluginRknn* filter);
 
 G_END_DECLS
 

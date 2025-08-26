@@ -1,0 +1,12 @@
+{
+    "clients": ["opi-003"],
+    "primary": {
+        "host": "opi-003",
+        "port": 30033
+    },
+    "server": {
+        "host": "10.0.3.169",
+        "port": 12345,
+        "register_name": "backend"
+    }
+}
