@@ -19,6 +19,7 @@ plugin_sources = [
   'postprocess.cc',
   'dmabuf.c',
   'cnpy/cnpy.cpp',
+  'socket_utils.cc',
   ]
 
 # Include directories
