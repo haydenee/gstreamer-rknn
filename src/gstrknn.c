@@ -222,6 +222,11 @@ static void release_rknn_resources(GstPluginRknn *filter) {
     filter->model_path = NULL;
   }
 
+  if (filter->socket_config_path) {
+    g_free(filter->socket_config_path);
+    filter->socket_config_path = NULL;
+  }
+
   if (filter->resize_mode) {
     g_free(filter->resize_mode);
     filter->resize_mode = NULL;
@@ -355,6 +360,7 @@ static gpointer push_thread(gpointer data) {
 enum {
   PROP_0,
   PROP_MODEL_PATH,
+  PROP_SOCKET_CONFIG_PATH,
   PROP_WORKERS,
   PROP_MPPJPEGDEC_OFFSET_WORKAROUND,
   PROP_DRAW_BOXES,
@@ -421,6 +427,12 @@ static void gst_plugin_rknn_class_init(GstPluginRknnClass *klass) {
   GST_DEBUG("Model path property installed");
 
   g_object_class_install_property(
+      gobject_class, PROP_SOCKET_CONFIG_PATH,
+      g_param_spec_string("socket-config-path", "Socket Config Path",
+                          "Path to the socket configuration file", NULL,
+                          G_PARAM_READWRITE));
+
+  g_object_class_install_property(
       gobject_class, PROP_RESIZE_MODE,
       g_param_spec_string("resize-mode", "Resize Mode",
                           "Resize mode: 'crop' or 'pad'", "pad",
@@ -477,6 +489,7 @@ static void gst_plugin_rknn_init(GstPluginRknn *filter) {
   filter->sinkpad = NULL;
   filter->srcpad = NULL;
   filter->model_path = NULL;
+  filter->socket_config_path = NULL;
   filter->sink_caps = NULL;
   filter->src_caps = NULL;
   filter->rknn_engines = NULL;
@@ -560,6 +573,13 @@ static void gst_plugin_rknn_set_property(GObject *object, guint prop_id,
     filter->model_path = g_value_dup_string(value);
     GST_DEBUG("model_path set to %s", filter->model_path);
     break;
+  case PROP_SOCKET_CONFIG_PATH:
+    GST_DEBUG("Setting socket_config_path property");
+    if (filter->socket_config_path)
+      g_free(filter->socket_config_path);
+    filter->socket_config_path = g_value_dup_string(value);
+    GST_DEBUG("socket_config_path set to %s", filter->socket_config_path);
+    break;
   case PROP_WORKERS:
     GST_DEBUG("Setting workers property");
     filter->workers = g_value_get_int(value);
@@ -600,6 +620,10 @@ static void gst_plugin_rknn_get_property(GObject *object, guint prop_id,
   case PROP_MODEL_PATH:
     GST_DEBUG("Getting model_path property: %s", filter->model_path);
     g_value_set_string(value, filter->model_path);
+    break;
+  case PROP_SOCKET_CONFIG_PATH:
+    GST_DEBUG("Getting socket_config_path property: %s", filter->socket_config_path);
+    g_value_set_string(value, filter->socket_config_path);
     break;
   case PROP_WORKERS:
     GST_DEBUG("Getting workers property: %d", filter->workers);
@@ -761,3 +785,4 @@ static gboolean plugin_init(GstPlugin *plugin) {
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, rknn, "rknn",
                   plugin_init, PACKAGE_VERSION, GST_LICENSE, GST_PACKAGE_NAME,
                   GST_PACKAGE_ORIGIN)
+

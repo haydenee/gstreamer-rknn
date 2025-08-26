@@ -94,6 +94,7 @@ struct _GstPluginRknn {
     GstPad* srcpad;
     
     gchar* model_path;
+    gchar* socket_config_path;
 
     int workers;
     gchar* resize_mode;
