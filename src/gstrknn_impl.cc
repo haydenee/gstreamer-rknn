@@ -23,8 +23,10 @@
 #include "rknnprocess.h"
 #include "gstrknn_impl.h"
 #include "socket_utils.h"
+#include "nlohmann/json.hpp"
 
 #include <sys/time.h>
+#include <fstream>
 
 /* Forward declarations */
 static gpointer push_thread(gpointer data);
@@ -178,6 +180,92 @@ gboolean allocate_rknn_resources(GstPluginRknn *filter) {
   GST_INFO("Creating output collector thread");
   filter->push_thread = g_thread_new("output-collector", push_thread, filter);
 
+  // 初始化 socket 通信
+  if (filter->socket_config_path) {
+    try {
+      std::ifstream config_file(filter->socket_config_path);
+      if (!config_file.is_open()) {
+        GST_ERROR("Failed to open socket config file: %s", filter->socket_config_path);
+        return FALSE;
+      }
+
+      nlohmann::json config = nlohmann::json::parse(config_file);
+      
+      // 获取当前主机名
+      char hostname[256];
+      gethostname(hostname, sizeof(hostname));
+      std::string current_hostname(hostname);
+
+      // 检查当前主机名是否在 clients 列表中
+      auto clients = config["clients"];
+      bool is_client = false;
+      for (const auto& client : clients) {
+        if (client.get<std::string>() == current_hostname) {
+          is_client = true;
+          break;
+        }
+      }
+
+      // 检查当前主机名是否是 primary
+      auto primary = config["primary"];
+      std::string primary_hostname = primary["hostname"];
+      bool is_primary = (primary_hostname == current_hostname);
+
+      // 如果当前节点是 client，连接到 primary
+      if (is_client) {
+        std::string primary_host = primary["hostname"];
+        int primary_port = primary["port"];
+
+        filter->socket_client = new SocketClient(current_hostname);
+        if (!filter->socket_client->connect(primary_host, primary_port)) {
+          GST_ERROR("Failed to connect to primary: %s:%d", primary_host.c_str(), primary_port);
+          delete filter->socket_client;
+          filter->socket_client = nullptr;
+          return FALSE;
+        }
+        GST_INFO("Connected to primary as client: %s", current_hostname.c_str());
+      }
+
+      // 如果当前节点是 primary，连接到 server 并监听 clients
+      if (is_primary) {
+        auto server = config["server"];
+        std::string server_host = server["host"];
+        int server_port = server["port"];
+        std::string register_name = server["register_name"];
+        int client_port = primary["port"];
+
+        filter->socket_primary = new SocketPrimary(register_name);
+        
+        // 连接到 server
+        if (!filter->socket_primary->connect_to_server(server_host, server_port)) {
+          GST_ERROR("Failed to connect to server: %s:%d", server_host.c_str(), server_port);
+          delete filter->socket_primary;
+          filter->socket_primary = nullptr;
+          return FALSE;
+        }
+
+        // 开始监听 clients
+        if (!filter->socket_primary->start_listening(client_port)) {
+          GST_ERROR("Failed to start listening on port: %d", client_port);
+          delete filter->socket_primary;
+          filter->socket_primary = nullptr;
+          return FALSE;
+        }
+
+        GST_INFO("Connected to server and listening on port %d as primary: %s",
+                 client_port, current_hostname.c_str());
+      }
+
+      if (!is_client && !is_primary) {
+        GST_INFO("Current hostname %s not in clients list and not primary, skipping socket initialization",
+                 current_hostname.c_str());
+      }
+    } catch (const std::exception& e) {
+      GST_ERROR("Failed to parse socket config: %s", e.what());
+      return FALSE;
+    }
+  }
+
   GST_DEBUG("allocate_state_resources end");
   return TRUE;
 }
@@ -256,6 +344,8 @@ gboolean scheduler(GstPluginRknn *filter, GstBuffer *raw_buffer) {
   gst_buffer_add_meta(raw_buffer, GST_RKNN_META_INFO, NULL);
   struct RknnMeta *rknn_meta = &gst_buffer_get_rknn_meta(raw_buffer)->rknn_meta;
   rknn_meta->start_time = gst_clock_get_time(filter->clock);
+  rknn_meta->height = filter->img_height;
+  rknn_meta->width = filter->img_width;
   struct RknnEngine *rknn_engine = filter->rknn_engines[filter->next_worker_id];
   while (g_async_queue_length(filter->workers_queue) > 3) {
     // GST_TRACE("Waiting for free workers");
@@ -350,6 +440,9 @@ gpointer push_thread(gpointer data) {
 
     struct RknnMeta *meta = &gst_buffer_get_rknn_meta(buf)->rknn_meta;
     meta->push_pad_done = gst_clock_get_time(filter->clock);
+    if (filter->socket_client) {
+      filter->socket_client->send_detection(meta);
+    }
     GST_DEBUG("Push thread pushed offset %lu", GST_BUFFER_OFFSET(buf));
     gst_pad_push(filter->srcpad, buf);
   }

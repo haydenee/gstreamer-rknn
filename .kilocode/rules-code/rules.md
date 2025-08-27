@@ -1,3 +1,5 @@
 To test your latest changes, run ./script/remote_test.sh. It uploads the code, executes the tests on the remote host, and downloads the results to ./log. You should check that file and make sure no GStreamer-CRITICAL or any type of ERROR/error/err is reported.
 
 After you’ve finished coding and testing a self-contained task and confirmed with the user that everything works, automatically create a concise, meaningful git commit that summarizes the change.
+
+There may be external changes in current branch. Your commit change should include all active change from last commit.

@@ -6,6 +6,9 @@
 
 /* 前向声明 RknnMeta 结构体 */
 struct RknnMeta {
+  gint height;
+  gint width;
+  
   GstClockTime start_time;
   GstClockTime queue_done;
   GstClockTime preprocess_done;

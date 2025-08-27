@@ -55,6 +55,15 @@
 #include "rknnprocess.h"
 #include "glib/gasyncqueue.h"
 #define MAX_QUEUE_LENGTH 4
+
+// Forward declarations for C++ classes (for C compatibility)
+#ifdef __cplusplus
+class SocketPrimary;
+class SocketClient;
+#else
+typedef struct SocketPrimary SocketPrimary;
+typedef struct SocketClient SocketClient;
+#endif
 #define MAX_DMABUF_INSTANCES 5
 #define DEFAULT_WORKERS 3
 
@@ -95,6 +104,10 @@ struct _GstPluginRknn {
     
     gchar* model_path;
     gchar* socket_config_path;
+
+    // Socket communication
+    SocketPrimary* socket_primary;
+    SocketClient* socket_client;
 
     int workers;
     gchar* resize_mode;
