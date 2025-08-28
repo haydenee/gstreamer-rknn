@@ -3,6 +3,11 @@
 
 #include <string>
 #include <vector>
+#include <map>
+#include <mutex>
+#include <thread>
+#include <chrono>
+#include <condition_variable>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -121,6 +126,14 @@ private:
     int server_port_;
     int client_port_;
     bool connected_to_server_;
+    
+    // 新增成员变量
+    std::map<std::string, std::string> client_messages_;  // 存储每个客户端最近一次的消息
+    std::vector<std::string> client_order_;              // 存储客户端连接顺序
+    std::mutex messages_mutex_;                          // 保护消息数据的互斥锁
+    std::thread sender_thread_;                          // 发送消息的线程
+    bool stop_sender_;                                   // 停止发送线程的标志
+    std::condition_variable sender_cv_;                 // 条件变量，用于控制发送频率
 
 public:
     /**
@@ -180,6 +193,29 @@ public:
      * @return register name
      */
     std::string get_register_name() const { return register_name_; }
+
+    /**
+     * 接收客户端消息并存储
+     * @param client_sockfd 客户端socket文件描述符
+     * @param client_hostname 客户端hostname
+     * @return 成功返回true，失败返回false
+     */
+    bool receive_client_message(int client_sockfd, const std::string& client_hostname);
+
+    /**
+     * 启动30fps消息发送线程
+     */
+    void start_sender_thread();
+
+    /**
+     * 停止消息发送线程
+     */
+    void stop_sender_thread();
+
+    /**
+     * 发送线程的主函数
+     */
+    void sender_thread_func();
 };
 
 #endif /* __SOCKET_UTILS_H__ */

@@ -1,7 +1,5 @@
 #include "socket_utils.h"
 #include <iostream>
-#include <sstream>
-#include <stdexcept>
 #include <errno.h>
 #include "nlohmann/json.hpp"
 
@@ -14,7 +12,7 @@ bool SocketUtils::send_message(int sockfd, const std::string& message) {
     ssize_t total_sent = 0;
     ssize_t bytes_sent;
     const char* data = formatted_message.c_str();
-    size_t total_length = formatted_message.size();
+    ssize_t total_length = formatted_message.size();
     
     while (total_sent < total_length) {
         bytes_sent = write(sockfd, data + total_sent, total_length - total_sent);
@@ -255,12 +253,14 @@ void SocketClient::disconnect() {
 
 // ==================== SocketPrimary 实现 ====================
 
-SocketPrimary::SocketPrimary(const std::string& register_name) 
-    : server_sockfd_(-1), listen_sockfd_(-1), register_name_(register_name), 
-      server_port_(-1), client_port_(-1), connected_to_server_(false) {
+SocketPrimary::SocketPrimary(const std::string& register_name)
+    : server_sockfd_(-1), listen_sockfd_(-1), register_name_(register_name),
+      server_port_(-1), client_port_(-1), connected_to_server_(false),
+      stop_sender_(false) {
 }
 
 SocketPrimary::~SocketPrimary() {
+    stop_sender_thread();
     disconnect_from_server();
     if (listen_sockfd_ >= 0) {
         close(listen_sockfd_);
@@ -342,4 +342,86 @@ void SocketPrimary::disconnect_from_server() {
         server_sockfd_ = -1;
     }
     connected_to_server_ = false;
+}
+
+bool SocketPrimary::receive_client_message(int client_sockfd, const std::string& client_hostname) {
+    std::string message;
+    if (!SocketUtils::receive_message(client_sockfd, message)) {
+        return false;
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(messages_mutex_);
+        
+        // 如果是新的客户端，添加到顺序列表中
+        if (client_messages_.find(client_hostname) == client_messages_.end()) {
+            client_order_.push_back(client_hostname);
+        }
+        
+        // 更新客户端的最新消息
+        client_messages_[client_hostname] = message;
+    }
+    
+    return true;
+}
+
+void SocketPrimary::start_sender_thread() {
+    if (sender_thread_.joinable()) {
+        return; // 线程已经在运行
+    }
+    
+    stop_sender_ = false;
+    sender_thread_ = std::thread(&SocketPrimary::sender_thread_func, this);
+}
+
+void SocketPrimary::stop_sender_thread() {
+    if (!sender_thread_.joinable()) {
+        return; // 线程未运行
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(messages_mutex_);
+        stop_sender_ = true;
+    }
+    
+    sender_cv_.notify_all();
+    sender_thread_.join();
+}
+
+void SocketPrimary::sender_thread_func() {
+    while (true) {
+        // 检查是否应该停止线程
+        {
+            std::lock_guard<std::mutex> lock(messages_mutex_);
+            if (stop_sender_) {
+                break;
+            }
+        }
+        
+        // 获取所有客户端的最新消息
+        std::vector<std::pair<std::string, std::string>> messages_to_send;
+        {
+            std::lock_guard<std::mutex> lock(messages_mutex_);
+            
+            // 按照客户端连接顺序获取消息
+            for (const auto& hostname : client_order_) {
+                auto it = client_messages_.find(hostname);
+                if (it != client_messages_.end()) {
+                    messages_to_send.emplace_back(hostname, it->second);
+                }
+            }
+        }
+        
+        // 发送每个客户端的最新消息到server
+        for (const auto& pair : messages_to_send) {
+            if (!send_to_server(pair.second)) {
+                // 发送失败，记录错误或处理
+                std::cerr << "Failed to send message from client " << pair.first << " to server" << std::endl;
+            }
+        }
+        
+        // 等待直到下一个30fps的时间点（约33.33毫秒）
+        std::unique_lock<std::mutex> lock(messages_mutex_);
+        sender_cv_.wait_for(lock, std::chrono::milliseconds(33), [this] { return stop_sender_; });
+    }
 }
