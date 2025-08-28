@@ -1,5 +1,6 @@
 services:
   gstreamer-rknn-cross:
+    image: gstreamer-rknn-cross
     build:
       context: ..
       dockerfile: docker/Dockerfile
