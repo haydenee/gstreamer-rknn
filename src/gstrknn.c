@@ -338,10 +338,17 @@ static gboolean gst_plugin_rknn_sink_event(GstPad *pad, GstObject *parent,
   return ret;
 }
 static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
-                                           GstBuffer *buf) {
+                                            GstBuffer *buf) {
   GstPluginRknn *filter;
 
   filter = GST_PLUGIN_RKNN(parent);
+
+  /* 确保缓冲区是可写的，以便修改元数据 */
+  buf = gst_buffer_make_writable(buf);
+  if (!buf) {
+    GST_ERROR("Failed to make buffer writable");
+    return GST_FLOW_ERROR;
+  }
 
   /* Add VideoMeta if meta info doesn't exist */
   GstVideoMeta *meta = gst_buffer_get_video_meta(buf);
@@ -351,10 +358,12 @@ static GstFlowReturn gst_plugin_rknn_chain(GstPad *pad, GstObject *parent,
     gst_buffer_add_video_meta(buf, GST_VIDEO_FRAME_FLAG_NONE,
                               video_info.finfo->format, video_info.width,
                               video_info.height);
+    /* 重新获取元数据，因为我们刚刚添加了它 */
+    meta = gst_buffer_get_video_meta(buf);
   }
 
   // Workaround mppjpegdec offset bug
-  if (filter->mppjpegdec_offset_workaround) {
+  if (filter->mppjpegdec_offset_workaround && meta) {
     GST_DEBUG("Apply offset workaround to raw_input. Before %zu After %d",
               meta->offset[1], meta->stride[0] * GST_ROUND_UP_16(meta->height));
     meta->offset[1] = meta->stride[0] * GST_ROUND_UP_16(meta->height);
