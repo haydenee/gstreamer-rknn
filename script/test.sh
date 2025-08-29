@@ -13,32 +13,36 @@ for i in {0..0}; do
 done
 
 echo "=== cmd ==="
-CMD="gst-launch-1.0 -e \
-    multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
-    ! jpegparse \
-    ! mppjpegdec dma-feature=true \
-    ! videorate \
-    ! video/x-raw, framerate=30/1 \
-    ! rknn workers=1 \
-        model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
-        draw_boxes=true \
-        resize_mode=crop \
-        mppjpegdec_offset_workaround=1 \
-    ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
-    ! h264parse ! mp4mux ! filesink location=test.mp4"
-
-# 
 # CMD="gst-launch-1.0 -e \
-#     v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true num-buffers=3000 \
-#     ! videorate drop-only=true \
-#     ! video/x-raw,framerate=30/1 \
-#     ! rknn workers=3 \
+#     multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
+#     ! jpegparse \
+#     ! mppjpegdec dma-feature=true \
+#     ! videorate \
+#     ! video/x-raw, framerate=30/1 \
+#     ! rknn workers=1 \
 #         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
 #         draw_boxes=true \
 #         resize_mode=crop \
-#         mppjpegdec_offset_workaround=0 \
+#         mppjpegdec_offset_workaround=1 \
 #     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
-#     ! h264parse ! mp4mux faststart=true ! filesink location=test.mp4"
+#     ! h264parse ! mp4mux ! filesink location=test.mp4"
+
+CMD="gst-launch-1.0 -e \
+    v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true \
+    ! videorate drop-only=true \
+    ! video/x-raw,framerate=30/1 \
+    ! rknn workers=3 \
+        model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
+        draw_boxes=false \
+        resize_mode=crop \
+        mppjpegdec_offset_workaround=0 \
+        socket_config_path=socket_config.json \
+    ! fakesink"
+    # ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
+    # ! rtph264pay pt=96 \
+    # ! udpsink host=0.0.0.0 port=5000"
+
+# ! h264parse ! mp4mux faststart=true ! filesink location=test.mp4"
 
 # 使用 test2.mov 文件输入
 # CMD="gst-launch-1.0 -e \
@@ -87,7 +91,7 @@ echo "$CMD"
 # |   |         | may include dumping the content of blocks of memory.           |
 # +------------------------------------------------------------------------------+
 #export GST_DEBUG=*:1,rknn:7,mpp:7,mppdec:7,mpph264dec:7:exif-tags:1
-export GST_DEBUG=*:1,rknn:4
+export GST_DEBUG=*:1,rknn:7
 
 export GST_MPP_NO_RGA=0
 

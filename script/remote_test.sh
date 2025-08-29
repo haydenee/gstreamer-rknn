@@ -6,7 +6,7 @@
 set -e
 
 # 配置参数
-REMOTE_HOST="root@10.0.1.177"
+REMOTE_HOST="root@opi-000.local"
 REMOTE_DIR="/root/gstreamer-rknn"
 LOG_FILE="log"
 MP4_FILE="test.mp4"

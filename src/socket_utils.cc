@@ -389,6 +389,13 @@ void SocketPrimary::stop_sender_thread() {
 }
 
 void SocketPrimary::sender_thread_func() {
+    // 计算30fps的间隔（约33.33毫秒）
+    const auto frame_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / 30.0));
+    
+    // 获取第一个时间点
+    auto next_send_time = std::chrono::steady_clock::now();
+    
     while (true) {
         // 检查是否应该停止线程
         {
@@ -420,8 +427,11 @@ void SocketPrimary::sender_thread_func() {
             }
         }
         
-        // 等待直到下一个30fps的时间点（约33.33毫秒）
+        // 计算下一次发送的时间点
+        next_send_time += frame_interval;
+        
+        // 等待直到下一次应该发送的时间点
         std::unique_lock<std::mutex> lock(messages_mutex_);
-        sender_cv_.wait_for(lock, std::chrono::milliseconds(33), [this] { return stop_sender_; });
+        sender_cv_.wait_until(lock, next_send_time, [this] { return stop_sender_; });
     }
 }

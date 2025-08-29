@@ -1,7 +1,7 @@
 {
-    "clients": ["opi-003"],
+    "clients": ["opi-000.local", "opi-001.local", "opi-002.local", "opi-003.local"],
     "primary": {
-        "hostname": "opi-003",
+        "hostname": "opi-003.local",
         "port": 30033
     },
     "server": {
