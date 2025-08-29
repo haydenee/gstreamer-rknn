@@ -28,7 +28,7 @@ echo "=== cmd ==="
 #     ! h264parse ! mp4mux ! filesink location=test.mp4"
 
 CMD="gst-launch-1.0 -e \
-    v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true \
+    v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true num-buffers=10 \
     ! videorate drop-only=true \
     ! video/x-raw,framerate=30/1 \
     ! rknn workers=3 \
@@ -91,7 +91,7 @@ echo "$CMD"
 # |   |         | may include dumping the content of blocks of memory.           |
 # +------------------------------------------------------------------------------+
 #export GST_DEBUG=*:1,rknn:7,mpp:7,mppdec:7,mpph264dec:7:exif-tags:1
-export GST_DEBUG=*:1,rknn:7
+export GST_DEBUG=*:1,rknn:4
 
 export GST_MPP_NO_RGA=0
 

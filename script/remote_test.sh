@@ -11,7 +11,7 @@ REMOTE_DIR="/root/gstreamer-rknn"
 LOG_FILE="log"
 MP4_FILE="test.mp4"
 TEST_SCRIPT="./script/test.sh"
-TIMEOUT=5
+TIMEOUT=1000
 #TEST_SCRIPT="./build/test/rgatest"
 
 echo "=== 开始远程测试流程 ==="

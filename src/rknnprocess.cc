@@ -35,18 +35,17 @@ int rknn_init_process(struct RknnEngine *rknn_process) {
     rknn_dup_context(rknn_process->worker_0_ctx, &rknn_process->ctx);
   }
 
-  if (rknn_process->worker_id == 0) {
-    rknn_sdk_version version;
-    rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version,
-               sizeof(rknn_sdk_version));
-    GST_DEBUG("sdk version: %s driver version: %s", version.api_version,
-              version.drv_version);
+  rknn_sdk_version version;
+  rknn_query(rknn_process->ctx, RKNN_QUERY_SDK_VERSION, &version,
+              sizeof(rknn_sdk_version));
+  GST_DEBUG("sdk version: %s driver version: %s", version.api_version,
+            version.drv_version);
 
-    rknn_query(rknn_process->ctx, RKNN_QUERY_IN_OUT_NUM, &rknn_process->io_num,
-               sizeof(rknn_process->io_num));
-    GST_DEBUG("model input num: %d, output num: %d",
-              rknn_process->io_num.n_input, rknn_process->io_num.n_output);
-  }
+  rknn_query(rknn_process->ctx, RKNN_QUERY_IN_OUT_NUM, &rknn_process->io_num,
+              sizeof(rknn_process->io_num));
+  GST_DEBUG("model input num: %d, output num: %d",
+            rknn_process->io_num.n_input, rknn_process->io_num.n_output);
+  
 
   // 初始化输入空间
   auto &attr = rknn_process->input_attr;

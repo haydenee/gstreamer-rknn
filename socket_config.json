@@ -5,7 +5,7 @@
         "port": 30033
     },
     "server": {
-        "host": "10.0.3.169",
+        "host": "192.168.51.87",
         "port": 12345,
         "register_name": "backend"
     }
