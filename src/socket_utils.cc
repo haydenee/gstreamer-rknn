@@ -11,6 +11,8 @@ GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
 // ==================== SocketUtils 实现 ====================
 
 bool SocketUtils::send_message(int sockfd, const std::string& message) {
+    GST_DEBUG("Sending message, size: %zu bytes", message.size());
+    
     // 格式化消息：长度 + \n + 内容
     std::string formatted_message = std::to_string(message.size()) + "\n" + message;
     
@@ -24,22 +26,28 @@ bool SocketUtils::send_message(int sockfd, const std::string& message) {
         if (bytes_sent <= 0) {
             if (bytes_sent == 0) {
                 // 连接关闭
+                GST_WARNING("Connection closed while sending message");
                 return false;
             }
             if (errno == EINTR) {
                 // 被信号中断，继续尝试
+                GST_DEBUG("Write interrupted by signal, retrying");
                 continue;
             }
             // 其他错误
+            GST_ERROR("Failed to send message: %s (errno: %d)", strerror(errno), errno);
             return false;
         }
         total_sent += bytes_sent;
     }
     
+    GST_DEBUG("Message sent successfully, total bytes: %zd", total_sent);
     return true;
 }
 
 bool SocketUtils::receive_message(int sockfd, std::string& message) {
+    GST_DEBUG("Waiting to receive message");
+    
     // 先读取长度行
     std::string length_str;
     char ch;
@@ -50,11 +58,14 @@ bool SocketUtils::receive_message(int sockfd, std::string& message) {
         if (bytes_read <= 0) {
             if (bytes_read == 0) {
                 // 连接关闭
+                GST_WARNING("Connection closed while receiving message length");
                 return false;
             }
             if (errno == EINTR) {
+                GST_DEBUG("Read interrupted by signal, retrying");
                 continue;
             }
+            GST_ERROR("Failed to receive message length: %s (errno: %d)", strerror(errno), errno);
             return false;
         }
         
@@ -65,17 +76,23 @@ bool SocketUtils::receive_message(int sockfd, std::string& message) {
         length_str += ch;
     }
     
+    GST_DEBUG("Received message length string: '%s'", length_str.c_str());
+    
     // 转换长度
     int length;
     try {
         length = std::stoi(length_str);
     } catch (const std::exception& e) {
+        GST_ERROR("Failed to parse message length '%s': %s", length_str.c_str(), e.what());
         return false;
     }
     
     if (length <= 0) {
+        GST_ERROR("Invalid message length: %d", length);
         return false;
     }
+    
+    GST_DEBUG("Message length: %d bytes", length);
     
     // 读取消息内容
     message.resize(length);
@@ -84,22 +101,29 @@ bool SocketUtils::receive_message(int sockfd, std::string& message) {
         bytes_read = read(sockfd, &message[total_read], length - total_read);
         if (bytes_read <= 0) {
             if (bytes_read == 0) {
+                GST_WARNING("Connection closed while receiving message content");
                 return false;
             }
             if (errno == EINTR) {
+                GST_DEBUG("Read interrupted by signal, retrying");
                 continue;
             }
+            GST_ERROR("Failed to receive message content: %s (errno: %d)", strerror(errno), errno);
             return false;
         }
         total_read += bytes_read;
     }
     
+    GST_DEBUG("Message received successfully, total bytes: %zd", total_read);
     return true;
 }
 
 int SocketUtils::connect_to_server(const std::string& host, int port) {
+    GST_INFO("Connecting to server %s:%d", host.c_str(), port);
+    
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
+        GST_ERROR("Failed to create socket: %s (errno: %d)", strerror(errno), errno);
         return -1;
     }
     
@@ -109,29 +133,35 @@ int SocketUtils::connect_to_server(const std::string& host, int port) {
     server_addr.sin_port = htons(port);
     
     if (inet_pton(AF_INET, host.c_str(), &server_addr.sin_addr) <= 0) {
+        GST_ERROR("Failed to convert address %s: %s (errno: %d)", host.c_str(), strerror(errno), errno);
         close(sockfd);
         return -1;
     }
     
     if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        GST_ERROR("Failed to connect to %s:%d: %s (errno: %d)", host.c_str(), port, strerror(errno), errno);
         close(sockfd);
         return -1;
     }
     
+    GST_INFO("Successfully connected to server %s:%d", host.c_str(), port);
     return sockfd;
 }
 
 int SocketUtils::create_server(int port) {
+    GST_INFO("Creating server socket on port %d", port);
+    
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
+        GST_ERROR("Failed to create server socket: %s (errno: %d)", strerror(errno), errno);
         return -1;
     }
     
     // 设置SO_REUSEADDR选项
     int opt = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        close(sockfd);
-        return -1;
+        GST_WARNING("Failed to set SO_REUSEADDR: %s (errno: %d)", strerror(errno), errno);
+        // 继续执行，这不是致命错误
     }
     
     struct sockaddr_in server_addr;
@@ -141,15 +171,18 @@ int SocketUtils::create_server(int port) {
     server_addr.sin_port = htons(port);
     
     if (bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        GST_ERROR("Failed to bind to port %d: %s (errno: %d)", port, strerror(errno), errno);
         close(sockfd);
         return -1;
     }
     
     if (listen(sockfd, 5) < 0) {
+        GST_ERROR("Failed to listen on port %d: %s (errno: %d)", port, strerror(errno), errno);
         close(sockfd);
         return -1;
     }
     
+    GST_INFO("Server socket created successfully on port %d", port);
     return sockfd;
 }
 
@@ -164,17 +197,24 @@ SocketClient::~SocketClient() {
 }
 
 bool SocketClient::connect(const std::string& primary_host, int primary_port) {
+    GST_INFO("SocketClient connecting to primary %s:%d", primary_host.c_str(), primary_port);
+    
     if (connected_) {
+        GST_DEBUG("Already connected, disconnecting first");
         disconnect();
     }
     
     sockfd_ = SocketUtils::connect_to_server(primary_host, primary_port);
     if (sockfd_ < 0) {
+        GST_ERROR("Failed to connect to primary %s:%d", primary_host.c_str(), primary_port);
         return false;
     }
     
+    GST_DEBUG("Connected to primary, sending hostname: %s", hostname_.c_str());
+    
     // 发送hostname作为第一条消息
     if (!SocketUtils::send_message(sockfd_, hostname_)) {
+        GST_ERROR("Failed to send hostname to primary");
         close(sockfd_);
         sockfd_ = -1;
         return false;
@@ -184,13 +224,17 @@ bool SocketClient::connect(const std::string& primary_host, int primary_port) {
     primary_port_ = primary_port;
     connected_ = true;
     
+    GST_INFO("Successfully connected to primary %s:%d and sent hostname", primary_host.c_str(), primary_port);
     return true;
 }
 
 bool SocketClient::send_detection(RknnMeta* meta) {
     if (!connected_) {
+        GST_WARNING("Cannot send detection: not connected to primary");
         return false;
     }
+    
+    GST_DEBUG("Preparing detection data for %d results", meta->results_size);
     
     // 创建 JSON 对象
     nlohmann::json detection_json;
@@ -244,14 +288,27 @@ bool SocketClient::send_detection(RknnMeta* meta) {
     // 将 JSON 对象转换为字符串
     std::string json_str = detection_json.dump();
     
+    GST_DEBUG("Sending detection data: %zu bytes, %d persons detected",
+              json_str.size(), meta->results_size);
+    
     // 发送 JSON 消息
-    return SocketUtils::send_message(sockfd_, json_str);
+    bool result = SocketUtils::send_message(sockfd_, json_str);
+    if (result) {
+        GST_DEBUG("Detection data sent successfully");
+    } else {
+        GST_ERROR("Failed to send detection data");
+    }
+    
+    return result;
 }
 
 void SocketClient::disconnect() {
     if (sockfd_ >= 0) {
+        GST_INFO("Disconnecting from primary %s:%d", primary_host_.c_str(), primary_port_);
         close(sockfd_);
         sockfd_ = -1;
+    } else {
+        GST_DEBUG("No active connection to disconnect");
     }
     connected_ = false;
 }
@@ -293,17 +350,24 @@ SocketPrimary::~SocketPrimary() {
 }
 
 bool SocketPrimary::connect_to_server(const std::string& server_host, int server_port) {
+    GST_INFO("SocketPrimary connecting to server %s:%d", server_host.c_str(), server_port);
+    
     if (connected_to_server_) {
+        GST_DEBUG("Already connected to server, disconnecting first");
         disconnect_from_server();
     }
     
     server_sockfd_ = SocketUtils::connect_to_server(server_host, server_port);
     if (server_sockfd_ < 0) {
+        GST_ERROR("Failed to connect to server %s:%d", server_host.c_str(), server_port);
         return false;
     }
     
+    GST_DEBUG("Connected to server, sending register name: %s", register_name_.c_str());
+    
     // 发送register_name作为第一条消息
     if (!SocketUtils::send_message(server_sockfd_, register_name_)) {
+        GST_ERROR("Failed to send register name to server");
         close(server_sockfd_);
         server_sockfd_ = -1;
         return false;
@@ -313,64 +377,96 @@ bool SocketPrimary::connect_to_server(const std::string& server_host, int server
     server_port_ = server_port;
     connected_to_server_ = true;
     
+    GST_INFO("Successfully connected to server %s:%d and sent register name", server_host.c_str(), server_port);
     return true;
 }
 
 bool SocketPrimary::start_listening(int client_port) {
+    GST_INFO("Starting to listen for client connections on port %d", client_port);
+    
     if (listen_sockfd_ >= 0) {
+        GST_DEBUG("Already listening, closing existing socket first");
         close(listen_sockfd_);
         listen_sockfd_ = -1;
     }
     
     listen_sockfd_ = SocketUtils::create_server(client_port);
     if (listen_sockfd_ < 0) {
+        GST_ERROR("Failed to create server socket on port %d", client_port);
         return false;
     }
     
     client_port_ = client_port;
+    GST_INFO("Successfully started listening on port %d", client_port);
     return true;
 }
 
 bool SocketPrimary::accept_client(int& client_sockfd, std::string& client_hostname) {
     if (listen_sockfd_ < 0) {
+        GST_ERROR("Cannot accept client: not listening");
         return false;
     }
+    
+    GST_DEBUG("Waiting for client connection...");
     
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     client_sockfd = accept(listen_sockfd_, (struct sockaddr*)&client_addr, &client_len);
     if (client_sockfd < 0) {
+        GST_ERROR("Failed to accept client connection: %s (errno: %d)", strerror(errno), errno);
         return false;
     }
     
+    char client_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+    GST_INFO("Accepted connection from client %s:%d", client_ip, ntohs(client_addr.sin_port));
+    
     // 接收client的hostname作为第一条消息
     if (!SocketUtils::receive_message(client_sockfd, client_hostname)) {
+        GST_ERROR("Failed to receive hostname from client");
         close(client_sockfd);
         return false;
     }
     
+    GST_INFO("Received hostname from client: %s", client_hostname.c_str());
     return true;
 }
 
 bool SocketPrimary::send_to_server(const std::string& aggregated_info) {
     if (!connected_to_server_) {
+        GST_WARNING("Cannot send to server: not connected");
         return false;
     }
     
-    return SocketUtils::send_message(server_sockfd_, aggregated_info);
+    GST_DEBUG("Sending aggregated info to server: %zu bytes", aggregated_info.size());
+    
+    bool result = SocketUtils::send_message(server_sockfd_, aggregated_info);
+    if (result) {
+        GST_DEBUG("Aggregated info sent successfully to server");
+    } else {
+        GST_ERROR("Failed to send aggregated info to server");
+    }
+    
+    return result;
 }
 
 void SocketPrimary::disconnect_from_server() {
     if (server_sockfd_ >= 0) {
+        GST_INFO("Disconnecting from server %s:%d", server_host_.c_str(), server_port_);
         close(server_sockfd_);
         server_sockfd_ = -1;
+    } else {
+        GST_DEBUG("No active server connection to disconnect");
     }
     connected_to_server_ = false;
 }
 
 bool SocketPrimary::receive_client_message(int client_sockfd, const std::string& client_hostname) {
+    GST_DEBUG("Receiving message from client: %s", client_hostname.c_str());
+    
     std::string message;
     if (!SocketUtils::receive_message(client_sockfd, message)) {
+        GST_ERROR("Failed to receive message from client %s", client_hostname.c_str());
         return false;
     }
     
@@ -379,6 +475,7 @@ bool SocketPrimary::receive_client_message(int client_sockfd, const std::string&
         
         // 更新客户端的最新消息
         client_messages_[client_hostname] = message;
+        GST_DEBUG("Updated message from client %s, size: %zu bytes", client_hostname.c_str(), message.size());
     }
     
     return true;
@@ -386,25 +483,29 @@ bool SocketPrimary::receive_client_message(int client_sockfd, const std::string&
 
 void SocketPrimary::start_sender_thread() {
     if (sender_thread_.joinable()) {
+        GST_DEBUG("Sender thread already running");
         return; // 线程已经在运行
     }
     
     stop_sender_ = false;
     sender_thread_ = std::thread(&SocketPrimary::sender_thread_func, this);
+    GST_INFO("Started sender thread for 30fps message sending");
 }
-
 void SocketPrimary::stop_sender_thread() {
     if (!sender_thread_.joinable()) {
+        GST_DEBUG("Sender thread not running");
         return; // 线程未运行
     }
     
     {
         std::lock_guard<std::mutex> lock(messages_mutex_);
         stop_sender_ = true;
+        GST_DEBUG("Stopping sender thread");
     }
     
     sender_cv_.notify_all();
     sender_thread_.join();
+    GST_INFO("Sender thread stopped");
 }
 
 void SocketPrimary::sender_thread_func() {
