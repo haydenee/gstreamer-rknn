@@ -129,7 +129,7 @@ private:
     
     // 新增成员变量
     std::map<std::string, std::string> client_messages_;  // 存储每个客户端最近一次的消息
-    std::vector<std::string> client_order_;              // 存储客户端连接顺序
+    std::vector<std::string> config_clients_;            // 存储配置文件中的客户端列表
     std::mutex messages_mutex_;                          // 保护消息数据的互斥锁
     std::thread sender_thread_;                          // 发送消息的线程
     bool stop_sender_;                                   // 停止发送线程的标志
@@ -137,11 +137,12 @@ private:
 
 public:
     /**
-     * 构造函数
-     * @param register_name 注册到server的名称
-     */
-    SocketPrimary(const std::string& register_name);
-
+     /**
+      * 构造函数
+      * @param register_name 注册到server的名称
+      * @param config_path 配置文件路径
+      */
+     SocketPrimary(const std::string& register_name, const std::string& config_path = "");
     /**
      * 析构函数，自动断开所有连接
      */

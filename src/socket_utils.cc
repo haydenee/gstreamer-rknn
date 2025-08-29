@@ -1,7 +1,12 @@
 #include "socket_utils.h"
 #include <iostream>
+#include <fstream>
 #include <errno.h>
 #include "nlohmann/json.hpp"
+#include <gst/gstinfo.h>
+
+GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
+#define GST_CAT_DEFAULT gst_plugin_rknn_debug
 
 // ==================== SocketUtils 实现 ====================
 
@@ -253,10 +258,29 @@ void SocketClient::disconnect() {
 
 // ==================== SocketPrimary 实现 ====================
 
-SocketPrimary::SocketPrimary(const std::string& register_name)
+SocketPrimary::SocketPrimary(const std::string& register_name, const std::string& config_path)
     : server_sockfd_(-1), listen_sockfd_(-1), register_name_(register_name),
       server_port_(-1), client_port_(-1), connected_to_server_(false),
       stop_sender_(false) {
+    
+    // 如果提供了配置文件路径，则加载配置文件中的客户端列表
+    if (!config_path.empty()) {
+        try {
+            std::ifstream config_file(config_path);
+            if (config_file.is_open()) {
+                nlohmann::json config = nlohmann::json::parse(config_file);
+                auto clients = config["clients"];
+                for (const auto& client : clients) {
+                    config_clients_.push_back(client.get<std::string>());
+                }
+                GST_INFO("Loaded %zu clients from config file", config_clients_.size());
+            } else {
+                GST_WARNING("Failed to open config file: %s", config_path.c_str());
+            }
+        } catch (const std::exception& e) {
+            GST_ERROR("Failed to parse config file: %s", e.what());
+        }
+    }
 }
 
 SocketPrimary::~SocketPrimary() {
@@ -353,11 +377,6 @@ bool SocketPrimary::receive_client_message(int client_sockfd, const std::string&
     {
         std::lock_guard<std::mutex> lock(messages_mutex_);
         
-        // 如果是新的客户端，添加到顺序列表中
-        if (client_messages_.find(client_hostname) == client_messages_.end()) {
-            client_order_.push_back(client_hostname);
-        }
-        
         // 更新客户端的最新消息
         client_messages_[client_hostname] = message;
     }
@@ -410,8 +429,8 @@ void SocketPrimary::sender_thread_func() {
         {
             std::lock_guard<std::mutex> lock(messages_mutex_);
             
-            // 按照客户端连接顺序获取消息
-            for (const auto& hostname : client_order_) {
+            // 按照配置文件中的客户端顺序获取消息
+            for (const auto& hostname : config_clients_) {
                 auto it = client_messages_.find(hostname);
                 if (it != client_messages_.end()) {
                     messages_to_send.emplace_back(hostname, it->second);
@@ -419,11 +438,24 @@ void SocketPrimary::sender_thread_func() {
             }
         }
         
-        // 发送每个客户端的最新消息到server
-        for (const auto& pair : messages_to_send) {
-            if (!send_to_server(pair.second)) {
-                // 发送失败，记录错误或处理
-                std::cerr << "Failed to send message from client " << pair.first << " to server" << std::endl;
+        // 检查消息数量是否足够（需要所有客户端都有消息）
+        size_t expected_client_count;
+        {
+            std::lock_guard<std::mutex> lock(messages_mutex_);
+            expected_client_count = config_clients_.size();
+        }
+        
+        if (messages_to_send.size() < expected_client_count) {
+            // 消息数量不够，不发送任何消息
+            GST_DEBUG("Not enough messages to send (expected %zu, got %zu), skipping send",
+                     expected_client_count, messages_to_send.size());
+        } else {
+            // 发送每个客户端的最新消息到server
+            for (const auto& pair : messages_to_send) {
+                if (!send_to_server(pair.second)) {
+                    // 发送失败，记录错误或处理
+                    GST_ERROR("Failed to send message from client %s to server", pair.first.c_str());
+                }
             }
         }
         

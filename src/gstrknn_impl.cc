@@ -65,6 +65,17 @@ gboolean init_rknn_engines(GstPluginRknn *filter) {
     rknn_process->img_height = filter->img_height;
     filter->model_width = rknn_process->model_width;
     filter->model_height = rknn_process->model_height;
+    
+    GST_DEBUG("Worker %d: model dimensions from rknn_process: %dx%d",
+              i, rknn_process->model_width, rknn_process->model_height);
+    GST_DEBUG("Worker %d: model dimensions in filter: %dx%d",
+              i, filter->model_width, filter->model_height);
+    
+    // 确保模型维度在所有工作线程中都被正确设置
+    if (rknn_process->model_width == 0 || rknn_process->model_height == 0) {
+      GST_ERROR("Worker %d: Invalid model dimensions: %dx%d",
+                i, rknn_process->model_width, rknn_process->model_height);
+    }
   }
   GST_DEBUG("sink_width %d sink_height %d rknn_width %d rknn_height %d",
             filter->img_width, filter->img_height, filter->model_width,
@@ -88,11 +99,16 @@ gboolean init_rknn_engines(GstPluginRknn *filter) {
     // crop 模式：缩放到较长的边刚好足够长度，较短的边裁切掉一部分
     scale = fmax(scale_w, scale_h);
     new_width = (int)(filter->model_width / scale);
-    new_height = (int)(filter->model_height / scale);
+    new_height = (int)(filter->model_height / scale); 
     img_pad_left = (int)((filter->img_width - new_width) / 2);
     img_pad_top = (int)((filter->img_height - new_height) / 2);
     img_pad_right = filter->img_width - new_width - img_pad_left;
     img_pad_bottom = filter->img_height - new_height - img_pad_top;
+    
+    GST_DEBUG("Crop mode: scale=%.2f, new_width=%d, new_height=%d", scale, new_width, new_height);
+    GST_DEBUG("Crop mode: img_width=%d, img_height=%d", filter->img_width, filter->img_height);
+    GST_DEBUG("Crop mode: img_pad_left=%d, img_pad_top=%d, img_pad_right=%d, img_pad_bottom=%d",
+              img_pad_left, img_pad_top, img_pad_right, img_pad_bottom);
   } else {
     // 默认 pad 模式：缩放到较短的边有足够长度，较长的边可以填充
     scale = fmin(scale_w, scale_h);
@@ -102,6 +118,10 @@ gboolean init_rknn_engines(GstPluginRknn *filter) {
     model_pad_top = (int)((filter->model_height - new_height) / 2);
     model_pad_right = filter->model_width - new_width - model_pad_left;
     model_pad_bottom = filter->model_height - new_height - model_pad_top;
+    
+    GST_DEBUG("Pad mode: scale=%.2f, new_width=%d, new_height=%d", scale, new_width, new_height);
+    GST_DEBUG("Pad mode: model_pad_left=%d, model_pad_top=%d, model_pad_right=%d, model_pad_bottom=%d",
+              model_pad_left, model_pad_top, model_pad_right, model_pad_bottom);
   }
 
   for (int i = 0; i < filter->workers; i++) {
@@ -234,7 +254,7 @@ gboolean allocate_rknn_resources(GstPluginRknn *filter) {
         std::string register_name = server["register_name"];
         int client_port = primary["port"];
 
-        filter->socket_primary = new SocketPrimary(register_name);
+        filter->socket_primary = new SocketPrimary(register_name, filter->socket_config_path);
         
         // 连接到 server
         if (!filter->socket_primary->connect_to_server(server_host, server_port)) {
