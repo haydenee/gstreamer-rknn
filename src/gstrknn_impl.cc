@@ -211,74 +211,43 @@ gboolean allocate_rknn_resources(GstPluginRknn *filter) {
 
       nlohmann::json config = nlohmann::json::parse(config_file);
       
-      // 获取当前主机名
-      char hostname[256];
-      gethostname(hostname, sizeof(hostname));
-      std::string current_hostname(hostname);
-
-      // 检查当前主机名是否在 clients 列表中
-      auto clients = config["clients"];
-      bool is_client = false;
-      for (const auto& client : clients) {
-        if (client.get<std::string>() == current_hostname) {
-          is_client = true;
-          break;
-        }
+      // 检查是否启用 socket 功能
+      bool enable_socket = config.value("enable", true);
+      if (!enable_socket) {
+        GST_INFO("Socket functionality is disabled in config, skipping initialization");
+        return TRUE;
       }
 
-      // 检查当前主机名是否是 primary
-      auto primary = config["primary"];
-      std::string primary_hostname = primary["hostname"];
-      bool is_primary = (primary_hostname == current_hostname);
+      // 使用工具函数检查当前主机角色
+      bool is_client = is_current_host_client(config);
+      bool is_primary = is_current_host_primary(config);
 
-      // 如果当前节点是 client，连接到 primary
+      // 如果是客户端，创建 SocketClient
       if (is_client) {
-        std::string primary_host = primary["hostname"];
-        int primary_port = primary["port"];
-
-        filter->socket_client = new SocketClient(current_hostname);
-        if (!filter->socket_client->connect(primary_host, primary_port)) {
-          GST_ERROR("Failed to connect to primary: %s:%d", primary_host.c_str(), primary_port);
+        filter->socket_client = new SocketClient(filter->socket_config_path);
+        if (!filter->socket_client->is_connected()) {
+          GST_ERROR("Failed to connect to primary as client");
           delete filter->socket_client;
           filter->socket_client = nullptr;
           return FALSE;
         }
-        GST_INFO("Connected to primary as client: %s", current_hostname.c_str());
+        GST_INFO("Connected to primary as client");
       }
 
-      // 如果当前节点是 primary，连接到 server 并监听 clients
+      // 如果是 primary，创建 SocketPrimary
       if (is_primary) {
-        auto server = config["server"];
-        std::string server_host = server["host"];
-        int server_port = server["port"];
-        std::string register_name = server["register_name"];
-        int client_port = primary["port"];
-
-        filter->socket_primary = new SocketPrimary(register_name, filter->socket_config_path);
-        
-        // 连接到 server
-        if (!filter->socket_primary->connect_to_server(server_host, server_port)) {
-          GST_ERROR("Failed to connect to server: %s:%d", server_host.c_str(), server_port);
+        filter->socket_primary = new SocketPrimary(filter->socket_config_path);
+        if (!filter->socket_primary->is_connected_to_server()) {
+          GST_ERROR("Failed to connect to server as primary");
           delete filter->socket_primary;
           filter->socket_primary = nullptr;
           return FALSE;
         }
-
-        // 开始监听 clients
-        if (!filter->socket_primary->start_listening(client_port)) {
-          GST_ERROR("Failed to start listening on port: %d", client_port);
-          delete filter->socket_primary;
-          filter->socket_primary = nullptr;
-          return FALSE;
-        }
-
-        GST_INFO("Connected to server and listening on port %d as primary: %s",
-                 client_port, current_hostname.c_str());
+        GST_INFO("Connected to server and listening as primary");
       }
 
       if (!is_client && !is_primary) {
-        GST_INFO("Current hostname %s not in clients list and not primary, skipping socket initialization",
-                 current_hostname.c_str());
+        GST_INFO("Current host not in clients list and not primary, skipping socket initialization");
       }
     } catch (const std::exception& e) {
       GST_ERROR("Failed to parse socket config: %s", e.what());
@@ -332,6 +301,19 @@ void release_rknn_resources(GstPluginRknn *filter) {
   if (filter->socket_config_path) {
     g_free(filter->socket_config_path);
     filter->socket_config_path = NULL;
+  }
+
+  // 释放 socket 相关资源
+  if (filter->socket_client) {
+    delete filter->socket_client;
+    filter->socket_client = nullptr;
+    GST_DEBUG("SocketClient resources released");
+  }
+  
+  if (filter->socket_primary) {
+    delete filter->socket_primary;
+    filter->socket_primary = nullptr;
+    GST_DEBUG("SocketPrimary resources released");
   }
 
   if (filter->resize_mode) {
