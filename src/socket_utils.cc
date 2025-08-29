@@ -2,6 +2,8 @@
 #include <iostream>
 #include <fstream>
 #include <errno.h>
+#include <netdb.h>
+#include <sys/types.h>
 #include "nlohmann/json.hpp"
 #include <gst/gstinfo.h>
 
@@ -121,31 +123,86 @@ bool SocketUtils::receive_message(int sockfd, std::string& message) {
 int SocketUtils::connect_to_server(const std::string& host, int port) {
     GST_INFO("Connecting to server %s:%d", host.c_str(), port);
     
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        GST_ERROR("Failed to create socket: %s (errno: %d)", strerror(errno), errno);
-        return -1;
-    }
-    
+    // 首先尝试直接解析为IP地址
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     
-    if (inet_pton(AF_INET, host.c_str(), &server_addr.sin_addr) <= 0) {
-        GST_ERROR("Failed to convert address %s: %s (errno: %d)", host.c_str(), strerror(errno), errno);
-        close(sockfd);
-        return -1;
+    if (inet_pton(AF_INET, host.c_str(), &server_addr.sin_addr) > 0) {
+        // 成功解析为IP地址，直接连接
+        int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) {
+            GST_ERROR("Failed to create socket: %s (errno: %d)", strerror(errno), errno);
+            return -1;
+        }
+        
+        if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+            GST_ERROR("Failed to connect to %s:%d: %s (errno: %d)", host.c_str(), port, strerror(errno), errno);
+            close(sockfd);
+            return -1;
+        }
+        
+        GST_INFO("Successfully connected to server %s:%d", host.c_str(), port);
+        return sockfd;
     }
     
-    if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        GST_ERROR("Failed to connect to %s:%d: %s (errno: %d)", host.c_str(), port, strerror(errno), errno);
-        close(sockfd);
-        return -1;
+    // 如果不是IP地址，尝试DNS解析
+    struct addrinfo hints, *result = nullptr, *rp;
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_INET;      // IPv4 only
+    hints.ai_socktype = SOCK_STREAM; // TCP socket
+    
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    
+    int ret = getaddrinfo(host.c_str(), port_str, &hints, &result);
+    if (ret != 0) {
+        // 如果带 .local 后缀解析失败，尝试去掉 .local 后缀
+        std::string fallback_host = host;
+        size_t dot_local_pos = host.find(".local");
+        if (dot_local_pos != std::string::npos && dot_local_pos == host.length() - 6) {
+            fallback_host = host.substr(0, dot_local_pos);
+            GST_INFO("Failed to resolve %s, trying fallback hostname: %s", host.c_str(), fallback_host.c_str());
+            
+            ret = getaddrinfo(fallback_host.c_str(), port_str, &hints, &result);
+            if (ret != 0) {
+                GST_ERROR("Failed to resolve both %s and fallback %s: %s",
+                         host.c_str(), fallback_host.c_str(), gai_strerror(ret));
+                return -1;
+            }
+        } else {
+            GST_ERROR("Failed to resolve hostname %s: %s", host.c_str(), gai_strerror(ret));
+            return -1;
+        }
     }
     
-    GST_INFO("Successfully connected to server %s:%d", host.c_str(), port);
-    return sockfd;
+    // 尝试所有返回的地址
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        int sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sockfd < 0) {
+            continue;
+        }
+        
+        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0) {
+            // 连接成功
+            freeaddrinfo(result);
+            
+            // 获取实际的IP地址用于日志
+            char ip_str[INET_ADDRSTRLEN];
+            struct sockaddr_in* addr_in = (struct sockaddr_in*)rp->ai_addr;
+            inet_ntop(AF_INET, &addr_in->sin_addr, ip_str, sizeof(ip_str));
+            
+            GST_INFO("Successfully connected to server %s:%d (resolved to %s)", host.c_str(), port, ip_str);
+            return sockfd;
+        }
+        
+        close(sockfd);
+    }
+    
+    freeaddrinfo(result);
+    GST_ERROR("Failed to connect to any address for %s:%d", host.c_str(), port);
+    return -1;
 }
 
 int SocketUtils::create_server(int port) {
@@ -396,6 +453,8 @@ SocketPrimary::SocketPrimary(const std::string& config_path)
             GST_WARNING("Current host is not primary, SocketPrimary will not connect");
             return;
         }
+        
+        GST_INFO("Current host is primary, initializing SocketPrimary connections");
 
         // 加载配置文件中的客户端列表
         auto clients = config["clients"];
