@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "rknn_meta.h"
+#include "nlohmann/json.hpp"
 
 // C-compatible forward declarations for use in C headers
 #ifdef __cplusplus
@@ -74,9 +75,9 @@ private:
 public:
     /**
      * 构造函数
-     * @param hostname 客户端的hostname
+     * @param config_path 配置文件路径，自动从中读取配置并连接
      */
-    SocketClient(const std::string& hostname);
+    SocketClient(const std::string& config_path);
 
     /**
      * 析构函数，自动断开连接
@@ -137,12 +138,10 @@ private:
 
 public:
     /**
-     /**
-      * 构造函数
-      * @param register_name 注册到server的名称
-      * @param config_path 配置文件路径
-      */
-     SocketPrimary(const std::string& register_name, const std::string& config_path = "");
+     * 构造函数
+     * @param config_path 配置文件路径，自动从中读取配置并连接
+     */
+    SocketPrimary(const std::string& config_path);
     /**
      * 析构函数，自动断开所有连接
      */
@@ -218,5 +217,9 @@ public:
      */
     void sender_thread_func();
 };
+
+// 工具函数声明
+bool is_current_host_client(const nlohmann::json& config);
+bool is_current_host_primary(const nlohmann::json& config);
 
 #endif /* __SOCKET_UTILS_H__ */

@@ -188,8 +188,70 @@ int SocketUtils::create_server(int port) {
 
 // ==================== SocketClient 实现 ====================
 
-SocketClient::SocketClient(const std::string& hostname) 
-    : sockfd_(-1), hostname_(hostname), primary_port_(-1), connected_(false) {
+// 工具函数：检查当前主机是否在配置的客户端列表中
+bool is_current_host_client(const nlohmann::json& config) {
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+    std::string current_hostname(hostname);
+    
+    auto clients = config["clients"];
+    for (const auto& client : clients) {
+        if (client.get<std::string>() == current_hostname) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 工具函数：检查当前主机是否是 primary
+bool is_current_host_primary(const nlohmann::json& config) {
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+    std::string current_hostname(hostname);
+    
+    auto primary = config["primary"];
+    std::string primary_hostname = primary["hostname"];
+    return (primary_hostname == current_hostname);
+}
+
+SocketClient::SocketClient(const std::string& config_path)
+    : sockfd_(-1), primary_port_(-1), connected_(false) {
+    
+    // 从配置文件读取配置并自动连接
+    try {
+        std::ifstream config_file(config_path);
+        if (!config_file.is_open()) {
+            GST_ERROR("Failed to open socket config file: %s", config_path.c_str());
+            return;
+        }
+
+        nlohmann::json config = nlohmann::json::parse(config_file);
+        
+        // 检查当前主机是否是客户端
+        if (!is_current_host_client(config)) {
+            GST_WARNING("Current host is not in clients list, SocketClient will not connect");
+            return;
+        }
+
+        // 获取当前主机名
+        char hostname[256];
+        gethostname(hostname, sizeof(hostname));
+        hostname_ = std::string(hostname);
+
+        // 获取 primary 配置（使用 host 字段，包含 .local）
+        auto primary = config["primary"];
+        std::string primary_host = primary["host"];
+        int primary_port = primary["port"];
+
+        // 自动连接到 primary
+        if (!connect(primary_host, primary_port)) {
+            GST_ERROR("Failed to connect to primary: %s:%d", primary_host.c_str(), primary_port);
+        } else {
+            GST_INFO("SocketClient automatically connected to primary: %s:%d", primary_host.c_str(), primary_port);
+        }
+    } catch (const std::exception& e) {
+        GST_ERROR("Failed to parse config file or connect to primary: %s", e.what());
+    }
 }
 
 SocketClient::~SocketClient() {
@@ -315,28 +377,60 @@ void SocketClient::disconnect() {
 
 // ==================== SocketPrimary 实现 ====================
 
-SocketPrimary::SocketPrimary(const std::string& register_name, const std::string& config_path)
-    : server_sockfd_(-1), listen_sockfd_(-1), register_name_(register_name),
-      server_port_(-1), client_port_(-1), connected_to_server_(false),
-      stop_sender_(false) {
+SocketPrimary::SocketPrimary(const std::string& config_path)
+    : server_sockfd_(-1), listen_sockfd_(-1), server_port_(-1), client_port_(-1),
+      connected_to_server_(false), stop_sender_(false) {
     
-    // 如果提供了配置文件路径，则加载配置文件中的客户端列表
-    if (!config_path.empty()) {
-        try {
-            std::ifstream config_file(config_path);
-            if (config_file.is_open()) {
-                nlohmann::json config = nlohmann::json::parse(config_file);
-                auto clients = config["clients"];
-                for (const auto& client : clients) {
-                    config_clients_.push_back(client.get<std::string>());
-                }
-                GST_INFO("Loaded %zu clients from config file", config_clients_.size());
-            } else {
-                GST_WARNING("Failed to open config file: %s", config_path.c_str());
-            }
-        } catch (const std::exception& e) {
-            GST_ERROR("Failed to parse config file: %s", e.what());
+    // 从配置文件读取配置并自动连接
+    try {
+        std::ifstream config_file(config_path);
+        if (!config_file.is_open()) {
+            GST_ERROR("Failed to open socket config file: %s", config_path.c_str());
+            return;
         }
+
+        nlohmann::json config = nlohmann::json::parse(config_file);
+        
+        // 检查当前主机是否是 primary
+        if (!is_current_host_primary(config)) {
+            GST_WARNING("Current host is not primary, SocketPrimary will not connect");
+            return;
+        }
+
+        // 加载配置文件中的客户端列表
+        auto clients = config["clients"];
+        for (const auto& client : clients) {
+            config_clients_.push_back(client.get<std::string>());
+        }
+        GST_INFO("Loaded %zu clients from config file", config_clients_.size());
+
+        // 获取 server 配置
+        auto server = config["server"];
+        std::string server_host = server["host"];
+        int server_port = server["port"];
+        register_name_ = server["register_name"];
+        
+        // 获取 client 端口配置
+        auto primary = config["primary"];
+        int client_port = primary["port"];
+
+        // 自动连接到 server
+        if (!connect_to_server(server_host, server_port)) {
+            GST_ERROR("Failed to connect to server: %s:%d", server_host.c_str(), server_port);
+            return;
+        }
+
+        // 自动开始监听 clients
+        if (!start_listening(client_port)) {
+            GST_ERROR("Failed to start listening on port: %d", client_port);
+            disconnect_from_server();
+            return;
+        }
+
+        GST_INFO("SocketPrimary automatically connected to server %s:%d and listening on port %d",
+                server_host.c_str(), server_port, client_port);
+    } catch (const std::exception& e) {
+        GST_ERROR("Failed to parse config file or connect to server: %s", e.what());
     }
 }
 
