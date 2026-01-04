@@ -2,8 +2,8 @@
     "enable": true,
     "clients": ["opi-000", "opi-001", "opi-002", "opi-003"],
     "primary": {
-        "hostname": "opi-003",
-        "host": "opi-003.local",
+        "hostname": "opi-000",
+        "host": "opi-000.local",
         "port": 30033
     },
     "server": {

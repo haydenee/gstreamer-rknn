@@ -93,6 +93,17 @@ public:
     bool connect(const std::string& primary_host, int primary_port);
 
     /**
+     * 连接到primary服务器，带有重连机制
+     * @param primary_host primary服务器主机名或IP地址
+     * @param primary_port primary服务器端口
+     * @param max_retries 最大重试次数
+     * @param retry_interval_ms 重试间隔（毫秒）
+     * @return 成功返回true，失败返回false
+     */
+    bool connect_with_retry(const std::string& primary_host, int primary_port,
+                           int max_retries = 10, int retry_interval_ms = 2000);
+
+    /**
      * 发送检测信息到primary
      * @param detection_info 检测信息内容
      * @return 成功返回true，失败返回false

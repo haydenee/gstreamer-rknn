@@ -184,19 +184,21 @@ int SocketUtils::connect_to_server(const std::string& host, int port) {
             continue;
         }
         
+        // 获取IP地址信息用于连接和日志
+        char ip_str[INET_ADDRSTRLEN];
+        struct sockaddr_in* addr_in = (struct sockaddr_in*)rp->ai_addr;
+        inet_ntop(AF_INET, &addr_in->sin_addr, ip_str, sizeof(ip_str));
+        
+        GST_INFO("Attempting to connect to %s (resolved from %s:%d)", ip_str, host.c_str(), port);
+        
         if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0) {
             // 连接成功
             freeaddrinfo(result);
-            
-            // 获取实际的IP地址用于日志
-            char ip_str[INET_ADDRSTRLEN];
-            struct sockaddr_in* addr_in = (struct sockaddr_in*)rp->ai_addr;
-            inet_ntop(AF_INET, &addr_in->sin_addr, ip_str, sizeof(ip_str));
-            
-            GST_INFO("Successfully connected to server %s:%d (resolved to %s)", host.c_str(), port, ip_str);
+            GST_INFO("Successfully connected to server %s (resolved from %s:%d)", ip_str, host.c_str(), port);
             return sockfd;
         }
         
+        GST_DEBUG("Failed to connect to %s:%d (%s)", host.c_str(), port, ip_str);
         close(sockfd);
     }
     
@@ -300,9 +302,9 @@ SocketClient::SocketClient(const std::string& config_path)
         std::string primary_host = primary["host"];
         int primary_port = primary["port"];
 
-        // 自动连接到 primary
-        if (!connect(primary_host, primary_port)) {
-            GST_ERROR("Failed to connect to primary: %s:%d", primary_host.c_str(), primary_port);
+        // 自动连接到 primary，使用重连机制
+        if (!connect_with_retry(primary_host, primary_port)) {
+            GST_ERROR("Failed to connect to primary: %s:%d after retries", primary_host.c_str(), primary_port);
         } else {
             GST_INFO("SocketClient automatically connected to primary: %s:%d", primary_host.c_str(), primary_port);
         }
@@ -342,9 +344,94 @@ bool SocketClient::connect(const std::string& primary_host, int primary_port) {
     primary_host_ = primary_host;
     primary_port_ = primary_port;
     connected_ = true;
-    
     GST_INFO("Successfully connected to primary %s:%d and sent hostname", primary_host.c_str(), primary_port);
     return true;
+}
+
+bool SocketClient::connect_with_retry(const std::string& primary_host, int primary_port,
+                                     int max_retries, int retry_interval_ms) {
+    GST_INFO("SocketClient connecting to primary %s:%d with retry mechanism (max_retries=%d, interval=%dms)",
+             primary_host.c_str(), primary_port, max_retries, retry_interval_ms);
+    
+    if (connected_) {
+        GST_DEBUG("Already connected, disconnecting first");
+        disconnect();
+    }
+    
+    // 首先解析DNS获取IP地址，使用与 connect_to_server 相同的回退逻辑
+    struct addrinfo hints, *result = nullptr;
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_INET;      // IPv4 only
+    hints.ai_socktype = SOCK_STREAM; // TCP socket
+    
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", primary_port);
+    
+    int ret = getaddrinfo(primary_host.c_str(), port_str, &hints, &result);
+    if (ret != 0) {
+        // 如果带 .local 后缀解析失败，尝试去掉 .local 后缀
+        std::string fallback_host = primary_host;
+        size_t dot_local_pos = primary_host.find(".local");
+        if (dot_local_pos != std::string::npos && dot_local_pos == primary_host.length() - 6) {
+            fallback_host = primary_host.substr(0, dot_local_pos);
+            GST_INFO("Failed to resolve %s, trying fallback hostname: %s", primary_host.c_str(), fallback_host.c_str());
+            
+            ret = getaddrinfo(fallback_host.c_str(), port_str, &hints, &result);
+            if (ret != 0) {
+                GST_ERROR("Failed to resolve both %s and fallback %s: %s",
+                         primary_host.c_str(), fallback_host.c_str(), gai_strerror(ret));
+                return false;
+            }
+        } else {
+            GST_ERROR("Failed to resolve hostname %s: %s", primary_host.c_str(), gai_strerror(ret));
+            return false;
+        }
+    }
+    
+    // 获取解析到的IP地址
+    char ip_str[INET_ADDRSTRLEN];
+    struct sockaddr_in* addr_in = (struct sockaddr_in*)result->ai_addr;
+    inet_ntop(AF_INET, &addr_in->sin_addr, ip_str, sizeof(ip_str));
+    
+    GST_INFO("Resolved %s:%d to IP address: %s", primary_host.c_str(), primary_port, ip_str);
+    freeaddrinfo(result);
+    
+    // 使用解析到的IP地址进行重连尝试
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        GST_INFO("Connection attempt %d/%d to %s:%d (resolved to %s)",
+                attempt, max_retries, primary_host.c_str(), primary_port, ip_str);
+        
+        sockfd_ = SocketUtils::connect_to_server(primary_host, primary_port);
+        if (sockfd_ >= 0) {
+            // 连接成功，发送hostname
+            GST_DEBUG("Connected to primary, sending hostname: %s", hostname_.c_str());
+            
+            if (!SocketUtils::send_message(sockfd_, hostname_)) {
+                GST_ERROR("Failed to send hostname to primary");
+                close(sockfd_);
+                sockfd_ = -1;
+                continue; // 发送失败也重试
+            }
+            
+            primary_host_ = primary_host;
+            primary_port_ = primary_port;
+            connected_ = true;
+            
+            GST_INFO("Successfully connected to primary %s:%d (resolved to %s) and sent hostname",
+                    primary_host.c_str(), primary_port, ip_str);
+            return true;
+        }
+        
+        if (attempt < max_retries) {
+            GST_WARNING("Connection attempt %d/%d failed, retrying in %dms...",
+                       attempt, max_retries, retry_interval_ms);
+            std::this_thread::sleep_for(std::chrono::milliseconds(retry_interval_ms));
+        }
+    }
+    
+    GST_ERROR("Failed to connect to primary %s:%d after %d attempts",
+             primary_host.c_str(), primary_port, max_retries);
+    return false;
 }
 
 bool SocketClient::send_detection(RknnMeta* meta) {
