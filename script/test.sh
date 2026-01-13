@@ -1,5 +1,6 @@
 #!/bin/bash
 unset GST_V4L2_USE_LIBV4L2
+SOCKET_CONFIG_PATH="${SOCKET_CONFIG_PATH:-socket_config.json}"
 echo "=== inspect ==="
 echo "rknn:"
 
@@ -13,31 +14,31 @@ for i in {0..0}; do
 done
 
 echo "=== cmd ==="
-# CMD="gst-launch-1.0 -e \
-#     multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
-#     ! jpegparse \
-#     ! mppjpegdec dma-feature=true \
-#     ! videorate \
-#     ! video/x-raw, framerate=30/1 \
-#     ! rknn workers=1 \
-#         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
-#         draw_boxes=true \
-#         resize_mode=crop \
-#         mppjpegdec_offset_workaround=1 \
-#     ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
-#     ! h264parse ! mp4mux ! filesink location=test.mp4"
-
 CMD="gst-launch-1.0 -e \
-    v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true num-buffers=10 \
-    ! videorate drop-only=true \
-    ! video/x-raw,framerate=30/1 \
-    ! rknn workers=3 \
+    multifilesrc location=/tmp/frame_%02d.jpg index=0 caps=\"image/jpeg, framerate=30/1\" \
+    ! jpegparse \
+    ! mppjpegdec dma-feature=true \
+    ! videorate \
+    ! video/x-raw, framerate=30/1 \
+    ! rknn workers=1 \
         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
-        draw_boxes=false \
+        draw_boxes=true \
         resize_mode=crop \
-        mppjpegdec_offset_workaround=0 \
-        socket_config_path=socket_config.json \
-    ! fakesink"
+        mppjpegdec_offset_workaround=1 \
+    ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
+    ! h264parse ! mp4mux ! filesink location=test.mp4"
+
+# CMD="gst-launch-1.0 -e \
+#     v4l2src device=/dev/video0 io-mode=dmabuf do-timestamp=true num-buffers=10 \
+#     ! videorate drop-only=true \
+#     ! video/x-raw,framerate=30/1 \
+#     ! rknn workers=3 \
+#         model-path=/root/gstreamer-rknn/model/yolo11l-pose_352_640_quant.rknn \
+#         draw_boxes=false \
+#         resize_mode=crop \
+#         mppjpegdec_offset_workaround=0 \
+#         socket_config_path=${SOCKET_CONFIG_PATH} \
+#     ! fakesink"
     # ! mpph264enc rc-mode=cbr bps=4000000 gop=30 max-pending=2 qp-min=10 qp-max=30 profile=baseline  \
     # ! rtph264pay pt=96 \
     # ! udpsink host=0.0.0.0 port=5000"
