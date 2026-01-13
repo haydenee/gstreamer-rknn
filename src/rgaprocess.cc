@@ -6,6 +6,7 @@
 #include <gst/video/video.h>
 #include <gst/gst.h>
 #include <im2d.hpp>
+#include <mutex>
 #include <unordered_map>
 
 GST_DEBUG_CATEGORY_EXTERN(gst_plugin_rknn_debug);
@@ -39,6 +40,7 @@ static struct gst_rga_format gst_rga_formats[] = {
 };
 
 static std::unordered_map<int, rga_buffer_t> fd_map;
+static std::mutex fd_map_mutex;
 RgaSURF_FORMAT gst_to_rga_format(GstVideoFormat gst_format) {
   for (unsigned int i = 0;
        i < sizeof(gst_rga_formats) / sizeof(gst_rga_formats[0]); i++) {
@@ -220,18 +222,21 @@ rga_buffer_t gst_buffer_to_rga_buffer(GstBuffer *gst_buf) {
     return ret;
   }
 
+  std::lock_guard<std::mutex> lock(fd_map_mutex);
   // Assuming height is hstride.
-  if (!fd_map.count(fd)) {
-    GstMemory* mem = gst_buffer_peek_memory(gst_buf, 0);
+  auto it = fd_map.find(fd);
+  if (it == fd_map.end()) {
+    GstMemory *mem = gst_buffer_peek_memory(gst_buf, 0);
     size_t mem_size = mem->maxsize;
     auto handle = importbuffer_fd(fd, mem_size);
     GST_DEBUG("importbuffer_fd %d %zu get handle %d", fd, mem_size, handle);
-    fd_map[fd] =
+    rga_buffer_t mapped =
         wrapbuffer_handle(handle, width, height, rga_format, wstride, hstride);
+    it = fd_map.emplace(fd, mapped).first;
     GST_DEBUG(
         "Wrapping: fd:%d width:%d height:%d wstride:%d hstride:%d format:%d",
         fd, width, height, wstride, hstride, (int)rga_format);
   }
   GST_DEBUG("fd %d already mapped", fd);
-  return fd_map[fd];
+  return it->second;
 }

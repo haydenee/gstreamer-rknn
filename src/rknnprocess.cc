@@ -207,7 +207,12 @@ int rknn_postprocess(struct RknnEngine *rknn_process, float box_conf_threshold,
   auto &r = rknn_process->rknn_meta->results;
 
   auto rknn_meta = rknn_process->rknn_meta;
-  rknn_meta->results_size = data.results.size();
+  int results_size = static_cast<int>(data.results.size());
+  if (results_size > MAX_PERSON) {
+    GST_WARNING("Results truncated: %d -> %d", results_size, MAX_PERSON);
+    results_size = MAX_PERSON;
+  }
+  rknn_meta->results_size = results_size;
   float scale = rknn_process->scale_model_to_img;
   int model_pad_left = rknn_process->model_pad_left;
   int model_pad_top = rknn_process->model_pad_top;
